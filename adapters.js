@@ -21,7 +21,8 @@
       : '[data-mailwatch-account], #mectrl_currentAccount_secondary, #O365_MainLink_Me, #mectrl_headerPicture, #mectrl_currentAccount_primary, [data-testid="current-account"]';
     const candidates = nodes(doc, selector).filter(visible);
     const anchor = candidates.find(n => n.matches(p === 'gmail' ? 'a[href*="SignOutOptions"],button[aria-label],a[aria-label]' : '#O365_MainLink_Me,#mectrl_headerPicture'));
-    let identityToken = anchor ? [anchor.getAttribute('aria-label'), anchor.getAttribute('title'), texts(anchor)].join('|') : '';
+    const tokenParts = anchor ? [anchor.getAttribute('aria-label'), anchor.getAttribute('title'), texts(anchor)].filter(value => value && !/^(?:account manager|账户管理器|帳戶管理員|帐户管理器|我的账户|我的帳戶)$/i.test(value.trim())) : [];
+    let identityToken = tokenParts.join('|');
     const addresses = candidates.map(n => C.email(n.getAttribute('data-mailwatch-account')) || C.email(n.getAttribute('data-email')) || C.email(n.getAttribute('data-upn')) || C.email(n.getAttribute('aria-label')) || C.email(n.getAttribute('title')) || C.email(texts(n))).filter(Boolean);
     if (p === 'outlook' && !addresses.length) {
       const selected = selectedFolder(doc);
