@@ -1,7 +1,7 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.2.3';
+  const VERSION = '0.3.0';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);
@@ -22,6 +22,15 @@
     if (!from && !named) return null;
     return { category: help ? '订单求助' : '买家会话', confidence: from ? 'address' : 'display_name', subject: title };
   }
+  function etsyCandidate(message) {
+    const from = email(message.sender);
+    return from ? /@(?:[a-z0-9-]+\.)*etsy\.com$/i.test(from) : /^(?:etsy|etsy conversations|etsy messages)$/i.test(clean(message.senderName));
+  }
+  function acceptConfig(value) {
+    if (!value || value.schema !== 1 || ![30, 60].includes(value.poll_seconds) || value.collection_mode !== 'etsy_metadata' || !/^[a-f0-9]{16}$/.test(value.revision)) return null;
+    return { schema: 1, poll_seconds: value.poll_seconds, collection_mode: 'etsy_metadata', revision: value.revision };
+  }
+  function pollSeconds(state) { return acceptConfig(state.connection.config)?.poll_seconds || 30; }
   function revision(message) {
     if (message.identityKind === 'message' && message.sourceId) return `message:${message.sourceId}`;
     const time = message.receivedAt || message.timeHint || '';
@@ -49,7 +58,7 @@
   function publicConnection(state, now = Date.now()) {
     const c = state.connection;
     const status = c.status === 'connected' && (!c.lastHeartbeatAt || now - c.lastHeartbeatAt > 90000) ? 'stale' : c.status;
-    return { server: c.server, account: c.account, authenticated: active(state), status, error: c.error || '', panelCollapsed: state.panelCollapsed, panelPosition: state.panelPosition || null };
+    return { server: c.server, account: c.account, authenticated: active(state), status, error: c.error || '', pollSeconds: pollSeconds(state), panelCollapsed: state.panelCollapsed, panelPosition: state.panelPosition || null };
   }
   function mailboxHealth(state, box, now = Date.now()) {
     const tabs = Object.values(state.tabs).filter(t => t.mailboxId === box.id && t.owner === box.owner);
@@ -87,12 +96,12 @@
       const sourceRevision = await digest(revision(message));
       if (box.seen[sourceRevision]) { box.seen[sourceRevision] = now; continue; }
       box.seen[sourceRevision] = now;
-      const classified = classify(message);
-      if (first || !classified || (message.receivedAt && Date.parse(message.receivedAt) < box.startedAt - 60000)) continue;
+      const classified = classify(message), central = !!acceptConfig(state.connection.config);
+      if (first || !(central ? etsyCandidate(message) : classified) || (message.receivedAt && Date.parse(message.receivedAt) < box.startedAt - 60000)) continue;
       const id = await digest(`${state.installationId}:${owner}:${mailboxKey(p, address)}:${sourceRevision}`);
       if (state.events.some(e => e.id === id)) continue;
       const event = { id, owner, mailboxId: box.id, provider: p, email: address,
-        kind: 'buyer_message', subject: classified.subject, category: classified.category, confidence: classified.confidence,
+        kind: central ? 'etsy_candidate' : 'buyer_message', subject: central ? message.subject : classified.subject, category: classified?.category || '', confidence: classified?.confidence || '',
         sender: message.sender || message.senderName, sourceId: message.sourceId || null, sourceRevision,
         identityKind: message.identityKind, receivedAt: message.receivedAt, detectedAt: now, delivery: 'pending', attempts: 0 };
       state.events.push(event); added.push(event);
@@ -104,7 +113,7 @@
     state.events = [...state.events.filter(e => e.delivery !== 'uploaded'), ...completed];
     return added;
   }
-  const api = { VERSION, HOSTS, email, provider, mailboxKey, clean, subject, classify, revision, digest,
+  const api = { VERSION, HOSTS, email, provider, mailboxKey, clean, subject, classify, etsyCandidate, acceptConfig, pollSeconds, revision, digest,
     createState, normalizeServer, permissionPattern, active, publicConnection, mailboxHealth, applySnapshot };
   root.MailWatchCore = api;
   if (typeof module !== 'undefined') module.exports = api;

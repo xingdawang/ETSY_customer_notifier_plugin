@@ -1,6 +1,6 @@
 {
   "name": "etsy-customer-notifier-plugin",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
   "description": "Lightweight Chrome and Edge mailbox extension authenticated with provisioned plugin credentials.",
   "scripts": {

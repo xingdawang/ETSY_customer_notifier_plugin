@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Etsy 邮件提醒",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "使用中央服务器分配的插件凭证连接，后台发现 Outlook / Gmail 中的 Etsy 买家消息。",
   "minimum_chrome_version": "120",
   "permissions": ["alarms"],

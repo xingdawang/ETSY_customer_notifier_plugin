@@ -65,7 +65,7 @@
     return { sender: '', senderName: etsy ? texts(etsy) : '' };
   }
   function messageMetadata(row, p) {
-    let title = row.querySelector(p === 'gmail' ? '.bog, [data-subject], [data-testid="message-subject"]' : '[data-subject], [data-testid="message-subject"], [data-testid="subject"]');
+    let title = row.querySelector(p === 'gmail' ? '.bog, [data-subject], [data-testid="message-subject"]' : '[data-subject], [data-testid="message-subject"], [data-testid="subject"], [class*="subject" i]');
     if (!title && p === 'outlook') {
       title = nodes(row, 'span').find(n => !n.children.length && (/^(?:(?:Re|Fw|Fwd):\s*)*Etsy Conversation with .+/i.test(texts(n)) || /needs help with an order they placed[.!]?$/i.test(texts(n))));
     }

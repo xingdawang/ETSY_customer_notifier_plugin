@@ -35,7 +35,7 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
         central.token = 'fixture-session-' + Date.now(); return reply(200, { access_token: central.token });
       }
       if (req.headers.authorization !== `Bearer ${central.token}` || body.device_id !== 'provisioned-device-01') return reply(401);
-      if (req.url.endsWith('/heartbeat')) { central.heartbeats.push(body); return reply(200); }
+      if (req.url.endsWith('/heartbeat')) { central.heartbeats.push(body); return reply(200, { collection_config: { schema: 1, poll_seconds: 30, collection_mode: 'etsy_metadata', revision: 'a'.repeat(16) } }); }
       if (req.url.endsWith('/events')) { central.events.push(...body.events); return reply(200, { acknowledged_event_ids: body.events.map(e => e.event_id) }); }
       if (req.url.endsWith('/logout')) return reply(central.failLogout ? 503 : 200);
       reply(404);
@@ -81,12 +81,12 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
     assert.equal(await popup.locator('#connected-account').textContent(), 'plugin-01');
     assert.equal(await popup.locator('#password').inputValue(), '');
     const read = () => worker.evaluate(async () => (await MailWatchStorage.get('mailwatchState')).mailwatchState);
-    const tick = () => worker.evaluate(async () => { await serial(tick); });
+    const tick = () => worker.evaluate(async () => { await serial(async () => { const s = await readState(); s.connection.lastPollAt = 0; await save(s); await tick(); }); });
     let state = await read(); assert.equal(state.mailboxes.length, 2); assert.equal(state.events.length, 0);
     assert.equal(JSON.stringify(state).includes('assigned-test-secret'), false);
     await inbox.evaluate(row => document.querySelector('tbody').insertAdjacentHTML('beforeend', row), gmailRow('new-1'));
     await tick(); state = await read();
-    assert.equal(state.events.length, 1); assert.equal(state.events[0].delivery, 'uploaded'); assert.equal(central.events.length, 1);
+    assert.equal(state.events.length, 1); assert.equal(state.events[0].delivery, 'uploaded'); assert.equal(central.events.length, 1); assert.equal(central.events[0].kind, 'etsy_candidate');
     await tick(); assert.equal(central.events.length, 1, 'repeat scan must not upload duplicates');
     await outlookPage.evaluate(row => document.querySelector('[role=listbox]').insertAdjacentHTML('beforeend', row), outlookRow('new-thread'));
     await tick(); assert.equal(central.events.length, 2); assert.equal(central.events[1].shop, undefined);

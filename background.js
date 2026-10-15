@@ -70,6 +70,7 @@ async function scanTabs(state) {
   for (const [id, record] of Object.entries(state.tabs)) if (!supported.some(t => t.id === Number(id))) {
     record.status = 'unavailable'; record.at = Date.now();
   }
+  state.connection.lastPollAt = Date.now();
   await save(state);
 }
 async function sync(state, force = false) {
@@ -86,9 +87,19 @@ async function sync(state, force = false) {
       last_upload_error: c.uploadError || '',
       mailboxes: ownerBoxes.map(b => ({ mailbox_id: b.id, provider: b.provider, email: b.email,
         ...C.mailboxHealth(state, b), coverage: 'visible_rows' })),
+      completed_command: c.completedCommand || '',
+      diagnostics: { capabilities: ['central_config_v1', 'etsy_candidates_v1'], config_revision: C.acceptConfig(c.config)?.revision || '',
+        pages: Object.values(state.tabs).filter(t => t.owner === c.owner).slice(0, 100).map(t => ({ provider: t.provider, status: t.status, row_count: t.rowCount || 0, reported_at: t.at })) },
       unidentified_pages: Object.values(state.tabs).filter(t => t.owner === c.owner && !t.email).length
     });
     verifyIdentity(data, c);
+    const config = C.acceptConfig(data.collection_config);
+    if (config) c.config = config;
+    const command = data.command;
+    if (command?.type === 'rescan' && typeof command.id === 'string' && /^[a-f0-9-]{36}$/.test(command.id) && Number.isFinite(command.expires_at) && command.expires_at * 1000 > Date.now() && command.expires_at * 1000 < Date.now() + 301000 && command.id !== c.completedCommand) {
+      await scanTabs(state);
+      c.completedCommand = command.id;
+    }
     c.status = 'connected'; c.error = ''; c.lastHeartbeatAt = Date.now(); c.failures = 0; c.retryAt = 0;
     c.challenge = data.challenge && typeof data.challenge.nonce === 'string' && Date.parse(data.challenge.expires_at) > Date.now()
       ? { id: C.clean(data.challenge.id, 64), nonce: C.clean(data.challenge.nonce, 256), expires_at: data.challenge.expires_at } : null;
@@ -117,7 +128,7 @@ async function sync(state, force = false) {
   }
   await save(state);
 }
-async function tick() { const state = await readState(); if (!C.active(state)) return; await scanTabs(state); await sync(state); }
+async function tick() { const state = await readState(); if (!C.active(state)) return; if (!state.connection.lastPollAt || Date.now() - state.connection.lastPollAt >= C.pollSeconds(state) * 1000 - 1000) await scanTabs(state); await sync(state); }
 async function handle(message, sender) {
   if (!message || (!uiSender(sender) && !mailSender(sender))) throw new Error('请求来源无效。');
   const state = await readState();

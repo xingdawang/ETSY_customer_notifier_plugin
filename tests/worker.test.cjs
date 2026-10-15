@@ -136,3 +136,29 @@ test('new installations prefill the central server without replacing a saved cus
   const existing = await worker({ mailwatchState: saved });
   assert.equal(existing.state().connection.server, 'https://custom.example.test');
 });
+
+test('authenticated heartbeat applies bounded config and executes each rescan once', async () => {
+  const w = await worker(); await login(w);
+  let scans = 0;
+  w.api.tabs.query = async () => { scans++; return []; };
+  const command = { type: 'rescan', id: '12345678-1234-1234-1234-123456789abc', expires_at: Date.now() / 1000 + 100 };
+  const config = { schema: 1, poll_seconds: 60, collection_mode: 'etsy_metadata', revision: 'c'.repeat(16) };
+  w.setFetch(async () => w.ok('plugin-01', 'device-01', { collection_config: config, command }));
+  await w.sync(w.state(), true);
+  assert.equal(w.state().connection.config.poll_seconds, 60);
+  assert.equal(scans, 1);
+  await w.sync(w.state(), true);
+  assert.equal(scans, 1);
+  assert.equal(w.requests.at(-1).body.completed_command, command.id);
+  assert.equal(w.requests.at(-1).body.diagnostics.config_revision, config.revision);
+  w.setFetch(async () => w.ok('plugin-01', 'device-01', { collection_config: { ...config, poll_seconds: 0 }, command: { ...command, id: 'aaaaaaaa-1234-1234-1234-123456789abc', expires_at: 1 } }));
+  await w.sync(w.state(), true);
+  assert.equal(w.state().connection.config.poll_seconds, 60);
+  assert.equal(scans, 1);
+});
+test('wrong server identity cannot change configuration or execute commands', async () => {
+  const w = await worker(); await login(w);
+  w.setFetch(async () => w.ok('wrong-account', 'device-01', { collection_config: { schema: 1, poll_seconds: 60, collection_mode: 'etsy_metadata', revision: 'c'.repeat(16) } }));
+  await w.sync(w.state(), true);
+  assert.equal(w.state().connection.config, undefined);
+});

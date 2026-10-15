@@ -88,7 +88,7 @@ test('durable state preserves deduplication across worker restarts', async () =>
 test('UI sees only connection result and account, never token, mailbox status or queues', () => {
   const state = setup(); state.connection.challenge = { nonce: 'private-nonce' };
   const publicValue = C.publicConnection(state, now);
-  assert.deepEqual(Object.keys(publicValue).sort(), ['account', 'authenticated', 'error', 'panelCollapsed', 'panelPosition', 'server', 'status']);
+  assert.deepEqual(Object.keys(publicValue).sort(), ['account', 'authenticated', 'error', 'panelCollapsed', 'panelPosition', 'pollSeconds', 'server', 'status']);
   assert.equal(JSON.stringify(publicValue).includes('private'), false);
   assert.equal(C.publicConnection(state, now + 100000).status, 'stale');
 });
@@ -115,4 +115,24 @@ test('identified mailboxes report wrong-folder health before their first readabl
   assert.equal(state.mailboxes[0].baselined,true);assert.equal(state.events.length,0);
   await C.applySnapshot(state,tab,snapshot([mail('existing'),mail('new')]),now+2000);
   assert.equal(state.events.length,1);
+});
+
+test('central collection sends Etsy marketing candidates but never unrelated email', async () => {
+  const state = setup();
+  state.connection.config = { schema: 1, poll_seconds: 30, collection_mode: 'etsy_metadata', revision: 'a'.repeat(16) };
+  await C.applySnapshot(state, tab, snapshot([]), now);
+  const added = await C.applySnapshot(state, tab, snapshot([
+    mail('buyer'), mail('order', { subject: 'Your Etsy order receipt' }),
+    mail('unrelated', { sender: 'someone@example.com', subject: 'Private email' }),
+    mail('spoofed', { sender: 'fake@etsy.com.evil.test', senderName: 'Etsy' })
+  ]), now + 1000);
+  assert.equal(added.length, 2);
+  assert.ok(added.every(e => e.kind === 'etsy_candidate'));
+  assert.equal(added[1].subject, 'Your Etsy order receipt');
+});
+test('invalid remote configuration cannot replace a working configuration', () => {
+  const valid = { schema: 1, poll_seconds: 60, collection_mode: 'etsy_metadata', revision: 'b'.repeat(16), javascript: 'bad' };
+  assert.equal(C.acceptConfig(valid).javascript, undefined);
+  for (const changes of [{ schema: 2 }, { poll_seconds: 0 }, { collection_mode: 'all_mail' }, { revision: 'invalid' }]) assert.equal(C.acceptConfig({ ...valid, ...changes }), null);
+  assert.equal(C.pollSeconds(setup()), 30);
 });

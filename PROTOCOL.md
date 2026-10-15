@@ -99,3 +99,22 @@ HTTP 401 / 403 会使插件停止采集并要求重新输入专用凭证。服�
 ## 边界
 
 心跳证明最近有持有专用凭证的实例与中央通信，不是硬件证明或无漏报保证。网页元数据检查、插件在线和飞书送达需要在中央分别记录。当前版本不发送端到端测试邮件，也没有 Graph / Gmail API OAuth。
+
+
+## 0.3.0 可选扩展（仍为协议 v2）
+
+旧客户端不发送新字段仍可使用。心跳响应增加 `collection_config`：
+
+```json
+{"schema":1,"poll_seconds":30,"collection_mode":"etsy_metadata","revision":"0123456789abcdef"}
+```
+
+客户端只在响应身份验证通过后应用白名单字段，保留最后有效配置，拒绝未知 schema。配置值仅控制打包的既有行为，不执行远程代码。网站默认 30 秒，可设 60 秒；心跳保持约 30 秒。内容脚本的页面变动触发可早于定期检测。
+
+新版心跳增加 `diagnostics={capabilities:["central_config_v1","etsy_candidates_v1"],config_revision:"...",pages:[{provider,status,row_count,reported_at}]}` 和 `completed_command`（空或已完成 UUID）。页面上限 100，行数上限 500；无 URL、DOM、正文。服务端只在有效心跳挑战后保存诊断、确认命令。
+
+命令响应 `command=null` 或 `{id:"UUID",type:"rescan",expires_at:Unix秒}`，有效 5 分钟。仅允许 rescan，结果通过后续心跳返回；已执行表示尝试采集，不代表邮箱读取成功。需要设备令牌和安装身份；网站操作要求管理员登录及 CSRF。离线不会执行，过期不补执行。
+
+成功协商后新事件的 `kind=etsy_candidate`，其余身份、时间、来源修订和去重字段不变。发送者必须匹配固定 Etsy 候选边界，主题可以不是买家主题；服务器独立分类，忽略客户端 category/confidence。买家邮件进入原飞书队列，其余仅记录过滤回执；两者均在事务提交后返回 acknowledged_event_ids。过滤回执只存事件 ID、规范化载荷哈希和处理结果，不保存邮件正文或主题。
+
+旧队列的 `kind=buyer_message` 继续接受原有严格校验。两种事件共享通知去重键。候选确认后不因规则更新而补发历史邮件；新规则只影响首次处理的候选。站点与旧版插件均无需同时升级，但服务端回滚必须保留候选接口，否则新版候选队列会持续重试而不会丢弃。

@@ -3,6 +3,7 @@
   if (globalThis.__etsySentinelMounted || window.top !== window) return;
   globalThis.__etsySentinelMounted = true;
   const documentNonce = crypto.randomUUID();
+  let pollSeconds = 30, lastScan = 0;
   let cachedIdentity, timer, stopped = false, preferredPosition = null, drag = null, suppressClick = false;
   const host = document.createElement('div');
   host.id = 'etsy-sentinel';
@@ -75,9 +76,13 @@
     } else cachedIdentity = null;
     return { ...report, documentNonce, pageUrl: location.href };
   }
-  async function scan() {
+  async function scan(periodic = false) {
     if (stopped) return;
-    try { const result = await call({ type: 'MW_CONNECTION' }); if (result.connection.authenticated) await call({ type: 'MW_REPORT', report: collect() }); }
+    try { const result = await call({ type: 'MW_CONNECTION' });
+      pollSeconds = [30, 60].includes(result.connection.pollSeconds) ? result.connection.pollSeconds : 30;
+      if (periodic === true && Date.now() - lastScan < pollSeconds * 1000) return;
+      lastScan = Date.now();
+      if (result.connection.authenticated) await call({ type: 'MW_REPORT', report: collect() }); }
     catch (_) { if (!chrome.runtime?.id) stopped = true; }
   }
   chrome.runtime.onMessage.addListener((message, _sender, reply) => {
@@ -90,9 +95,9 @@
   const options = { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label', 'email', 'data-legacy-message-id', 'data-legacy-last-message-id', 'data-legacy-thread-id', 'title', 'aria-selected'] };
   const observer = new MutationObserver(() => { if (!timer && !stopped) timer = setTimeout(() => { timer = null; scan(); }, 1500); });
   observer.observe(document.documentElement, options);
-  let interval = setInterval(scan, 30000);
+  let interval = setInterval(() => scan(true), 30000);
   window.addEventListener('pagehide', () => { observer.disconnect(); clearInterval(interval); interval = null; clearTimeout(timer); timer = null; });
-  window.addEventListener('pageshow', event => { if (event.persisted) { cachedIdentity = null; observer.observe(document.documentElement, options); if (!interval) interval = setInterval(scan, 30000); scan(); } });
+  window.addEventListener('pageshow', event => { if (event.persisted) { cachedIdentity = null; observer.observe(document.documentElement, options); if (!interval) interval = setInterval(() => scan(true), 30000); scan(); } });
   window.addEventListener('online', scan);
   window.addEventListener('hashchange', scan);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scan(); });
