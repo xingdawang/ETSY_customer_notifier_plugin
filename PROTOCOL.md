@@ -1,6 +1,6 @@
 # 插件专用凭证协议 v2
 
-客户端已实现；配套中央服务仍待接入。该凭证标识每个插件，与邮箱登录和网站用户账户分开管理。
+客户端与中央服务已接入。当前网站使用 UU 登录名和密码完成首次验证，签发独立插件令牌。该凭证标识每个插件，与邮箱登录和网站用户账户分开管理。
 
 接口：配置地址下的 `/api/extension/v2/{login,heartbeat,events,logout}`。全部 POST JSON，除 login 外使用 `Authorization: Bearer <access_token>`。不跟随重定向，不使用网站登录 Cookie。HTTP 成功、`ok:true` 和 `protocol_version:2` 必须同时满足。
 
@@ -20,7 +20,7 @@
   "account": "plugin-001",
   "password": "服务器预先分配的插件密码",
   "installation_id": "本地安装 UUID",
-  "extension_version": "0.2.1"
+  "extension_version": "0.2.2"
 }
 ```
 

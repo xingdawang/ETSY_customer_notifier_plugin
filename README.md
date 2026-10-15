@@ -1,4 +1,4 @@
-# Etsy 邮件提醒 · 轻量插件 v0.2.1
+# Etsy 邮件提醒 · 轻量插件 v0.2.2
 
 Chrome / Edge Manifest V3 扩展。登录界面从上到下显示中央服务器地址、插件账户、密码和连接按钮；连接后显示账户、连接结果和退出；邮箱页面右侧可收起，工具栏弹窗使用同一界面。
 
@@ -12,7 +12,7 @@ Chrome / Edge Manifest V3 扩展。登录界面从上到下显示中央服务器
 4. 验证成功后显示“已连接”和账户。后台自动识别邮箱、建立初始列表基线、发现新的 Etsy 买家消息并上报，无需填写店铺名称或手动绑定。
 5. 退出后停止本机采集并清除会话令牌；网络断开时也可退出。未确认事件按原插件身份保留，不会转给新凭证。
 
-中央服务器地址放在账户输入框上方，也可在 `config.js` 中统一预填。面板收起后显示“哨”，按住气泡可拖到页面任意位置；松手后记住位置，刷新后恢复，窗口变小时自动保持可见。单击气泡可重新展开。
+中央服务器地址默认预填 `https://feishu-push.etsyweb.com`，放在账户输入框上方；已保存的自定义地址会保留，也可手动修改。面板收起后显示“哨”，按住气泡可拖到页面任意位置；松手后记住位置，刷新后恢复，窗口变小时自动保持可见。单击气泡可重新展开。
 
 ## 中央服务器接入
 
@@ -56,4 +56,4 @@ npm run test:browser
 
 可用 `MW_BROWSER_PATH` 指定 Chromium。预览位于 `artifacts/screenshots/`。
 
-打包：`python3 tools/package_extension.py`，输出 `dist/etsy-message-sentinel-v0.2.1.zip`。
+打包：`python3 tools/package_extension.py`，输出 `dist/etsy-message-sentinel-v0.2.2.zip`。

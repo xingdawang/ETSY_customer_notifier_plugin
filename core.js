@@ -1,7 +1,7 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.2.1';
+  const VERSION = '0.2.2';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);

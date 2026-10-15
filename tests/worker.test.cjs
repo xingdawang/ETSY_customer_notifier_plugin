@@ -127,3 +127,12 @@ test('v0.1 upgrade archives old state and requires provisioned plugin credential
   assert.equal(w.state().schema, 2); assert.equal(C.active(w.state()), false); assert.equal(w.store.mailwatchV1Archive.events[0].id, 'old-pending');
   assert.equal(w.store.mailwatchCredentials, null); assert.equal(w.state().panelCollapsed, true);
 });
+
+test('new installations prefill the central server without replacing a saved custom server', async () => {
+  const fresh = await worker();
+  assert.equal(C.normalizeServer(fresh.state().connection.server), 'https://feishu-push.etsyweb.com');
+  assert.equal(fresh.requests.length, 0);
+  const saved = C.createState(); saved.connection.server = 'https://custom.example.test';
+  const existing = await worker({ mailwatchState: saved });
+  assert.equal(existing.state().connection.server, 'https://custom.example.test');
+});

@@ -65,6 +65,7 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
     const popup = await context.newPage(); await popup.setViewportSize({ width: 304, height: 480 });
     await popup.goto(`chrome-extension://${id}/connection.html`);
     await popup.locator('#account').waitFor();
+    await popup.waitForFunction(() => document.querySelector('#server').value === 'https://feishu-push.etsyweb.com');
     assert.equal(await popup.evaluate(() => !!(document.querySelector('#server').compareDocumentPosition(document.querySelector('#account')) & Node.DOCUMENT_POSITION_FOLLOWING)), true, 'server address must be above the account');
     await popup.locator('body').screenshot({ path: path.join(output, 'lightweight-login.png') });
     await popup.locator('#account').fill('plugin-01');
