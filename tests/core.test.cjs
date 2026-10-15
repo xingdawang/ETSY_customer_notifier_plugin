@@ -88,7 +88,7 @@ test('durable state preserves deduplication across worker restarts', async () =>
 test('UI sees only connection result and account, never token, mailbox status or queues', () => {
   const state = setup(); state.connection.challenge = { nonce: 'private-nonce' };
   const publicValue = C.publicConnection(state, now);
-  assert.deepEqual(Object.keys(publicValue).sort(), ['account', 'authenticated', 'error', 'panelCollapsed', 'server', 'status']);
+  assert.deepEqual(Object.keys(publicValue).sort(), ['account', 'authenticated', 'error', 'panelCollapsed', 'panelPosition', 'server', 'status']);
   assert.equal(JSON.stringify(publicValue).includes('private'), false);
   assert.equal(C.publicConnection(state, now + 100000).status, 'stale');
 });

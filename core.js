@@ -1,7 +1,7 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.2.0';
+  const VERSION = '0.2.1';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);
@@ -33,7 +33,7 @@
     return Array.from(new Uint8Array(bytes), n => n.toString(16).padStart(2, '0')).join('');
   }
   function createState(now = Date.now()) {
-    return { schema: 2, installationId: crypto.randomUUID(), sequence: 0, panelCollapsed: false,
+    return { schema: 2, installationId: crypto.randomUUID(), sequence: 0, panelCollapsed: false, panelPosition: null,
       connection: { status: 'disconnected', server: '', account: '', token: '', owner: '', deviceId: '', lastHeartbeatAt: null, error: '' },
       mailboxes: [], tabs: {}, events: [], createdAt: now };
   }
@@ -49,7 +49,7 @@
   function publicConnection(state, now = Date.now()) {
     const c = state.connection;
     const status = c.status === 'connected' && (!c.lastHeartbeatAt || now - c.lastHeartbeatAt > 90000) ? 'stale' : c.status;
-    return { server: c.server, account: c.account, authenticated: active(state), status, error: c.error || '', panelCollapsed: state.panelCollapsed };
+    return { server: c.server, account: c.account, authenticated: active(state), status, error: c.error || '', panelCollapsed: state.panelCollapsed, panelPosition: state.panelPosition || null };
   }
   function mailboxHealth(state, box, now = Date.now()) {
     const tabs = Object.values(state.tabs).filter(t => t.mailboxId === box.id && t.owner === box.owner);

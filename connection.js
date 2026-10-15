@@ -34,7 +34,6 @@
     $('password-eye').setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
     $('password-eye').title = visible ? '隐藏密码' : '显示密码';
   };
-  $('server-settings').addEventListener('toggle', hidePassword);
   $('login-form').onsubmit = event => {
     event.preventDefault(); if (busy) return;
     let server;
@@ -43,7 +42,7 @@
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('protocol');
       if (url.username || url.password || url.search || url.hash) throw new Error('invalid URL');
       server = url.origin + url.pathname.replace(/\/+$/, '');
-    } catch (_) { $('server-settings').open = true; notice('请填写有效的 HTTPS 中央服务器地址。'); return; }
+    } catch (_) { $('server').focus(); notice('请填写有效的 HTTPS 中央服务器地址。'); return; }
     const account = $('account').value.trim(), password = $('password').value;
     $('password').value = ''; hidePassword();
     busy = true; $('login-button').disabled = true; notice('正在验证插件凭证…');

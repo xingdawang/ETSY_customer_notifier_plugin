@@ -123,7 +123,13 @@ async function handle(message, sender) {
   const state = await readState();
   switch (message.type) {
     case 'MW_CONNECTION': return { connection: C.publicConnection(state) };
-    case 'MW_PANEL': state.panelCollapsed = !!message.collapsed; await save(state); return {};
+    case 'MW_PANEL': {
+      if (typeof message.collapsed === 'boolean') state.panelCollapsed = message.collapsed;
+      if (message.position && ['x', 'y'].every(key => Number.isFinite(message.position[key]) && message.position[key] >= 0 && message.position[key] <= 100000)) {
+        state.panelPosition = { x: message.position.x, y: message.position.y };
+      }
+      await save(state); return {};
+    }
     case 'MW_REPORT': {
       if (!mailSender(sender)) throw new Error('仅接受邮箱页面报告。');
       if (!C.active(state)) return {};

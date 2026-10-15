@@ -65,9 +65,10 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
     const popup = await context.newPage(); await popup.setViewportSize({ width: 304, height: 480 });
     await popup.goto(`chrome-extension://${id}/connection.html`);
     await popup.locator('#account').waitFor();
+    assert.equal(await popup.evaluate(() => !!(document.querySelector('#server').compareDocumentPosition(document.querySelector('#account')) & Node.DOCUMENT_POSITION_FOLLOWING)), true, 'server address must be above the account');
     await popup.locator('body').screenshot({ path: path.join(output, 'lightweight-login.png') });
     await popup.locator('#account').fill('plugin-01');
-    await popup.locator('summary').click(); await popup.locator('#server').fill(base);
+    await popup.locator('#server').fill(base);
     await popup.locator('#password').fill('incorrect-fixture-password'); await popup.locator('#login-button').click();
     await popup.locator('#message').filter({ hasText: '凭证无效' }).waitFor();
     assert.equal(await popup.locator('#password').inputValue(), '');
@@ -93,8 +94,41 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
     assert.doesNotMatch(await panel.locator('body').innerText(), /店铺|立即检查|管理邮箱|网页状态|监听中/);
     assert.equal(await inbox.evaluate(() => { try { return document.querySelector('#etsy-sentinel').shadowRoot.querySelector('iframe').contentDocument?.querySelector('#password')?.value; } catch (_) { return undefined; } }), undefined, 'mail page cannot read the cross-origin password field');
     await inbox.screenshot({ path: path.join(output, 'lightweight-connected-panel.png') });
-    await inbox.locator('#etsy-sentinel #collapse').click(); await inbox.locator('#etsy-sentinel #expand').waitFor({ state: 'visible' });
-    await inbox.locator('#etsy-sentinel #expand').click();
+    await inbox.bringToFront();
+    await inbox.locator('#etsy-sentinel #collapse').click();
+    const bubble = inbox.locator('#etsy-sentinel #expand');
+    await bubble.waitFor({ state: 'visible' }); assert.equal(await bubble.textContent(), '哨');
+    async function dragBubble(x, y) {
+      const start = await bubble.boundingBox();
+      await inbox.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+      await inbox.mouse.down(); await inbox.mouse.move(x, y, { steps: 12 }); await inbox.mouse.up();
+      assert.equal(await bubble.isVisible(), true, 'drag must not expand the panel');
+      return bubble.boundingBox();
+    }
+    let dragged = await dragBubble(150, 230);
+    assert.ok(Math.abs(dragged.x - 127) < 2 && Math.abs(dragged.y - 207) < 2);
+    await bubble.click(); await inbox.locator('#etsy-sentinel iframe').waitFor({ state: 'visible' });
+    await inbox.locator('#etsy-sentinel #collapse').click();
+    let restoredBubble = await bubble.boundingBox(); assert.ok(Math.abs(restoredBubble.x - dragged.x) < 2);
+    dragged = await dragBubble(1148, 758);
+    assert.ok(dragged.x >= 0 && dragged.y >= 0 && dragged.x + dragged.width <= 1150 && dragged.y + dragged.height <= 760);
+    await inbox.setViewportSize({ width: 360, height: 300 });
+    await inbox.waitForFunction(() => {
+      const rect = document.querySelector('#etsy-sentinel').shadowRoot.querySelector('#expand').getBoundingClientRect();
+      return rect.right <= innerWidth && rect.bottom <= innerHeight;
+    });
+    restoredBubble = await bubble.boundingBox();
+    assert.ok(restoredBubble.x + restoredBubble.width <= 360 && restoredBubble.y + restoredBubble.height <= 300, 'resize keeps bubble reachable');
+    await bubble.click();
+    const expanded = await inbox.locator('#etsy-sentinel iframe').boundingBox();
+    assert.ok(expanded.x >= 0 && expanded.y >= 0 && expanded.x + expanded.width <= 360 && expanded.y + expanded.height <= 300, 'expanded panel remains within the viewport');
+    await inbox.locator('#etsy-sentinel #collapse').click();
+    await inbox.setViewportSize({ width: 1150, height: 760 });
+    await inbox.reload(); await bubble.waitFor({ state: 'visible' });
+    restoredBubble = await bubble.boundingBox();
+    assert.ok(Math.abs(restoredBubble.x - dragged.x) < 2 && Math.abs(restoredBubble.y - dragged.y) < 2, 'reload restores saved bubble position');
+    await inbox.screenshot({ path: path.join(output, 'draggable-bubble.png') });
+    await bubble.click();
     await popup.locator('body').screenshot({ path: path.join(output, 'lightweight-connected.png') });
     await inbox.close(); await tick();
     const health = central.heartbeats.at(-1).mailboxes.find(b => b.provider === 'gmail'); assert.equal(health.status, 'closed');
@@ -112,7 +146,7 @@ const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1
     const restored = await worker.evaluate(async () => (await MailWatchStorage.get('mailwatchState')).mailwatchState);
     assert.equal(restored.connection.account, 'plugin-01'); assert.equal(restored.events.length, 2);
     assert.deepEqual(errors, []);
-    console.log('Browser smoke passed: minimal credential UI, real local TLS login/heartbeat/events, invalid credentials, password isolation, auto-discovery, both adapters, deduplication, closure, offline logout and restart persistence.');
+    console.log('Browser smoke passed: minimal credential UI, real local TLS login/heartbeat/events, invalid credentials, password isolation, auto-discovery, both adapters, deduplication, closure, offline logout, draggable 哨 bubble, bounds, saved position and restart persistence.');
     console.log('Screenshots:', output);
   } finally {
     if (context) await context.close();

@@ -20,7 +20,7 @@
   "account": "plugin-001",
   "password": "服务器预先分配的插件密码",
   "installation_id": "本地安装 UUID",
-  "extension_version": "0.2.0"
+  "extension_version": "0.2.1"
 }
 ```
 
