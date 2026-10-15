@@ -5,18 +5,42 @@
   const texts = node => C.clean(node?.textContent || '', 350);
   function nodes(doc, selector) { return Array.from(doc.querySelectorAll(selector)); }
   function visible(node) { return !node.closest('[hidden],[aria-hidden="true"]') && node.getClientRects().length > 0; }
+  function selectedFolder(doc) {
+    return nodes(doc, '[role="treeitem"][aria-selected="true"], [role="treeitem"][aria-current="page"], nav [aria-current="page"]').find(visible);
+  }
+  function inboxFolder(node) { return [node?.getAttribute('aria-label'),node?.getAttribute('title'),texts(node)].filter(Boolean).some(value => /^(?:inbox|收件箱|收件匣|收信匣)(?:$|[\s(（\d])/i.test(C.clean(value))); }
+
+  function ownAccountLabel(node) {
+    // Read folder-account headings only; never derive the owner from message senders or recipients.
+    const own = Array.from(node.childNodes).filter(n => n.nodeType === 3 || (n.nodeType === 1 && !n.matches('[role="group"],[role="tree"]') && !n.querySelector('[role="treeitem"]'))).map(n => n.textContent).join(' ');
+    return [node.getAttribute('aria-label'), node.getAttribute('title'), own].filter(Boolean).join(' ');
+  }
   function activeIdentity(doc, p) {
     const selector = p === 'gmail'
       ? '[data-mailwatch-account], a[href*="accounts.google.com/SignOutOptions"], button[aria-label*="Google Account"], a[aria-label*="Google Account"], [aria-label*="Google 账号"], [aria-label*="Google 帳戶"]'
-      : '[data-mailwatch-account], #mectrl_currentAccount_secondary, #O365_MainLink_Me, #mectrl_headerPicture, [data-testid="current-account"]';
+      : '[data-mailwatch-account], #mectrl_currentAccount_secondary, #O365_MainLink_Me, #mectrl_headerPicture, #mectrl_currentAccount_primary, [data-testid="current-account"]';
     const candidates = nodes(doc, selector).filter(visible);
     const anchor = candidates.find(n => n.matches(p === 'gmail' ? 'a[href*="SignOutOptions"],button[aria-label],a[aria-label]' : '#O365_MainLink_Me,#mectrl_headerPicture'));
-    const identityToken = anchor ? [anchor.getAttribute('aria-label'), anchor.getAttribute('title'), texts(anchor)].join('|') : '';
-    for (const n of candidates) {
-      const address = C.email(n.getAttribute('data-mailwatch-account')) || C.email(n.getAttribute('aria-label')) || C.email(n.getAttribute('title')) || C.email(texts(n));
-      if (address) return { email: address, identityToken };
+    let identityToken = anchor ? [anchor.getAttribute('aria-label'), anchor.getAttribute('title'), texts(anchor)].join('|') : '';
+    const addresses = candidates.map(n => C.email(n.getAttribute('data-mailwatch-account')) || C.email(n.getAttribute('data-email')) || C.email(n.getAttribute('data-upn')) || C.email(n.getAttribute('aria-label')) || C.email(n.getAttribute('title')) || C.email(texts(n))).filter(Boolean);
+    if (p === 'outlook' && !addresses.length) {
+      const selected = selectedFolder(doc);
+      let account = selected?.parentElement;
+      while (account && !account.matches('[role="tree"]')) {
+        if (account.matches('[role="treeitem"]')) {
+          const address = C.email(ownAccountLabel(account));
+          if (address) { addresses.push(address); break; }
+        }
+        account = account.parentElement;
+      }
+      if (!addresses.length && selected) {
+        const tree = selected.closest('[role="tree"]');
+        if (tree) addresses.push(...nodes(tree, '[role="treeitem"][aria-expanded]').filter(visible).map(n => C.email(ownAccountLabel(n))).filter(Boolean));
+      }
+      if (new Set(addresses).size === 1) identityToken = 'folder-account:' + addresses[0];
     }
-    return { email: '', identityToken };
+    const unique = [...new Set(addresses)];
+    return { email: unique.length === 1 ? unique[0] : '', identityToken };
   }
   function dateMetadata(row, p) {
     const node = row.querySelector(p === 'gmail' ? '[data-received-at], .xW [title], .xW time, time[datetime]' : '[data-received-at], time[datetime], [data-testid="received-time"], [data-time]');
@@ -62,7 +86,11 @@
     const report = { provider: p, ...activeIdentity(doc, p), accountRoute: p === 'gmail' ? u.pathname : u.pathname.match(/^\/mail(?:\/\d+)?/)?.[0] || u.pathname,
       status: 'view_unavailable', detail: '', rowCount: 0, messages: [] };
     if (doc.querySelector('input[type="password"],input[name="loginfmt"]')) { report.status = 'login_required'; report.detail = '请先在邮箱页面完成登录。'; return report; }
-    const inbox = p === 'gmail' ? /^#inbox(?:$|\/)/.test(u.hash) : /\/mail(?:\/\d+)?\/(?:inbox)(?:$|\/)/i.test(u.pathname);
+    const selected = p === 'outlook' ? selectedFolder(doc) : null;
+    const rootMail = /^\/mail(?:\/\d+)?\/?$/i.test(u.pathname);
+    const outlookInbox = /\/mail(?:\/\d+)?\/inbox(?:$|\/)/i.test(u.pathname) || (rootMail && selected && inboxFolder(selected));
+    const search = /(?:^|[\/#])search(?:[\/#]|$)/i.test(u.pathname + u.hash) || u.searchParams.has('q') || u.searchParams.has('search');
+    const inbox = p === 'gmail' ? /^#inbox(?:$|\/)/.test(u.hash) : outlookInbox && !search && (!selected || inboxFolder(selected));
     if (!inbox) { report.status = 'wrong_folder'; report.detail = '只监听当前收件箱列表；请切回收件箱。'; return report; }
     const rowSelector = p === 'gmail' ? 'tr.zA, [data-mailwatch-row]' : '[role="option"][data-convid], [role="option"][data-itemid], [role="option"][aria-selected], [data-mailwatch-row]';
     const rows = nodes(doc, rowSelector).filter(visible).slice(0, 500);

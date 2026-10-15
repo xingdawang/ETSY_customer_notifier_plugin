@@ -104,3 +104,15 @@ test('pending events survive history pruning', async () => {
   await C.applySnapshot(state, tab, snapshot([]), now);
   assert.equal(state.events.filter(e => e.delivery === 'pending').length, 120); assert.equal(state.events.filter(e => e.delivery === 'uploaded').length, 100);
 });
+
+test('identified mailboxes report wrong-folder health before their first readable scan', async () => {
+  const state=setup();
+  await C.applySnapshot(state,tab,snapshot([],{status:'wrong_folder'}),now);
+  assert.equal(state.mailboxes.length,1);assert.equal(state.mailboxes[0].baselined,false);
+  assert.equal(C.mailboxHealth(state,state.mailboxes[0],now).status,'wrong_folder');
+  assert.equal(state.events.length,0);
+  await C.applySnapshot(state,tab,snapshot([mail('existing')]),now+1000);
+  assert.equal(state.mailboxes[0].baselined,true);assert.equal(state.events.length,0);
+  await C.applySnapshot(state,tab,snapshot([mail('existing'),mail('new')]),now+2000);
+  assert.equal(state.events.length,1);
+});

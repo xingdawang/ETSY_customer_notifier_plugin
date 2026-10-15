@@ -1,7 +1,7 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.2.2';
+  const VERSION = '0.2.3';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);
@@ -66,7 +66,7 @@
     const previous = state.tabs[tab.id];
     let box = state.mailboxes.find(b => b.owner === owner && b.provider === p && b.email === address);
     const readable = ['watching', 'limited'].includes(report.status);
-    if (!box && address && readable) {
+    if (!box && address) {
       box = { id: await digest(`${owner}:${mailboxKey(p, address)}`), owner, provider: p, email: address,
         startedAt: now, baselined: false, seen: {}, lastScanAt: null };
       state.mailboxes.push(box);
