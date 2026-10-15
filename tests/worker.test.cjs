@@ -4,131 +4,126 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const { webcrypto } = require('node:crypto');
-
-async function worker() {
-  const store = {}, listeners = {}, requests = [], reports = new Map(), tabs = [];
-  const noop = () => {};
+const C = require('../core.js');
+async function worker(seed = {}) {
+  const store = structuredClone(seed), listeners = {}, requests = [], reports = new Map(), tabs = [];
   const event = name => ({ addListener: fn => { listeners[name] = fn; } });
-  const api = { storage: { local: {
-    setAccessLevel: async () => {}, get: async key => ({ [key]: structuredClone(store[key]) }),
-    set: async data => Object.assign(store, structuredClone(data)), remove: async key => { delete store[key]; }
-  } }, alarms: { get: async () => ({}), create: async () => {}, onAlarm: event('alarm') },
-    runtime: { id: 'test-extension', getURL: value => `chrome-extension://test-extension/${value}`, onMessage: event('message'), onStartup: event('startup'), onInstalled: event('install'), openOptionsPage: async () => {} },
-    action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
-    permissions: { contains: async () => true }, notifications: { create: async () => {} },
+  const api = { alarms: { get: async () => ({}), create: async () => {}, onAlarm: event('alarm') },
+    runtime: { id: 'test-extension', getURL: value => `chrome-extension://test-extension/${value}`, onMessage: event('message'), onStartup: event('startup'), onInstalled: event('install') },
+    permissions: { contains: async () => true },
     tabs: { query: async () => tabs, get: async id => tabs.find(t => t.id === id),
       sendMessage: async (id, message) => message.type === 'MW_DOCUMENT_INFO' ? { ok: true, ...reports.get(id) } : { ok: true, report: reports.get(id) },
-      update: async () => {}, create: async () => {}, onRemoved: event('removed'), onUpdated: event('updated') }
+      onRemoved: event('removed'), onUpdated: event('updated') } };
+  const ok = (account = 'plugin-01', device = 'device-01', extra = {}) => new Response(JSON.stringify({ ok: true, protocol_version: 2, account, device_id: device, ...extra }));
+  let fetcher = async (url, options) => {
+    const body = JSON.parse(options.body);
+    return ok(body.account, body.account === 'plugin-02' ? 'device-02' : 'device-01', url.endsWith('/login') ? { access_token: 'session-token' } : url.endsWith('/events') ? { acknowledged_event_ids: body.events.map(e => e.id) } : {});
   };
-  let fetcher = async () => new Response(JSON.stringify({ ok: true, protocol_version: 1 }), { status: 200 });
-  const context = vm.createContext({ chrome: api, crypto: webcrypto, TextEncoder, URL, AbortSignal, setTimeout, console: { error: noop },
+  const context = vm.createContext({ chrome: api, crypto: webcrypto, TextEncoder, URL, AbortSignal, setTimeout,
     fetch: async (url, options) => { requests.push({ url, options, body: JSON.parse(options.body) }); return fetcher(url, options); } });
   context.importScripts = (...files) => files.forEach(file => {
-    if (file === 'storage.js') context.MailWatchStorage = api.storage.local;
+    if (file === 'storage.js') context.MailWatchStorage = { get: async key => ({ [key]: structuredClone(store[key]) }), set: async data => Object.assign(store, structuredClone(data)) };
     else vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context);
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'), context);
-  vm.runInContext('globalThis.testing = {ready, handle, sync, scanTabs, processSnapshot, flush: () => operation}', context);
+  vm.runInContext('globalThis.testing = {ready,handle,sync,scanTabs,tick,flush:()=>operation}', context);
   await context.testing.ready;
-  return { ...context.testing, store, tabs, reports, requests, listeners, api,
-    trusted: { id: 'test-extension', url: 'chrome-extension://test-extension/dashboard.html' },
-    mailbox: { id: 'test-extension', frameId: 0, url: 'https://mail.google.com/mail/u/0/#inbox', tab: { id: 1 } },
+  return { ...context.testing, store, tabs, reports, requests, listeners, api, ok,
+    ui: { id: 'test-extension', url: 'chrome-extension://test-extension/connection.html' },
+    mail: { id: 'test-extension', frameId: 0, url: 'https://mail.google.com/mail/u/0/#inbox', tab: { id: 1 } },
     setFetch: fn => { fetcher = fn; }, state: () => store.mailwatchState };
 }
-const ok = data => new Response(JSON.stringify({ ok: true, protocol_version: 1, ...data }));
+const login = (w, account = 'plugin-01') => w.handle({ type: 'MW_LOGIN', server: 'https://example.test', account, password: 'provisioned-secret' }, w.ui);
 
-test('mailbox pages cannot pair devices or change central configuration', async () => {
-  const w = await worker();
-  await assert.rejects(w.handle({ type: 'MW_PAIR', server: 'https://example.test', code: '123' }, w.mailbox), /管理页/);
+test('plugin credential is verified by the central server and password is not persisted', async () => {
+  const w = await worker(); const result = await login(w);
+  assert.equal(result.connection.status, 'connected'); assert.equal(result.connection.account, 'plugin-01');
+  assert.equal(w.requests[0].body.password, 'provisioned-secret'); assert.ok(w.requests[0].body.installation_id);
+  assert.equal(JSON.stringify(w.store).includes('provisioned-secret'), false);
+  assert.equal(JSON.stringify(result).includes('session-token'), false);
+});
+test('mailbox-origin scripts cannot submit device passwords', async () => {
+  const w = await worker(); await assert.rejects(w.handle({ type: 'MW_LOGIN', server: 'https://example.test', account: 'plugin-01', password: 'x' }, w.mail), /凭证面板/);
   assert.equal(w.requests.length, 0);
 });
-test('central credentials never appear in public state', async () => {
-  const w = await worker(); w.store.mailwatchCredentials = { token: 'token-must-stay-private' };
-  const result = await w.handle({ type: 'MW_STATE' }, w.mailbox);
-  assert.equal(JSON.stringify(result).includes('token-must-stay-private'), false);
+test('wrong credentials cannot create a connected state', async () => {
+  const w = await worker(); w.setFetch(async () => new Response('', { status: 401 }));
+  await assert.rejects(login(w), /凭证无效/); assert.equal(C.active(w.state()), false);
 });
-test('upload acknowledgement is required and unrelated IDs do not acknowledge events', async () => {
-  const w = await worker(); const state = w.state();
-  state.connection = { server: 'https://example.test', serverId: 'server-a', status: 'connected' };
-  state.events = [{ id: 'event-a', kind: 'buyer_message', delivery: 'pending', destination: 'server-a', attempts: 0 }];
-  w.store.mailwatchCredentials = { token: 'private' };
-  w.setFetch(async url => ok(url.endsWith('/events') ? { acknowledged_event_ids: ['unrelated'] } : {}));
-  await w.sync(state); assert.equal(w.state().events[0].delivery, 'pending');
-  w.setFetch(async url => ok(url.endsWith('/events') ? { acknowledged_event_ids: ['event-a'] } : {}));
+test('legacy website login responses are rejected, even if ok is true', async () => {
+  const w = await worker(); w.setFetch(async () => new Response(JSON.stringify({ ok: true, username: 'plugin-01', token: 'old' })));
+  await assert.rejects(login(w), /凭证接口/); assert.equal(C.active(w.state()), false);
+});
+test('the server must confirm the submitted device account', async () => {
+  const w = await worker(); w.setFetch(async () => w.ok('wrong-account', 'device-01', { access_token: 'token' }));
+  await assert.rejects(login(w), /正确的插件身份/); assert.equal(C.active(w.state()), false);
+});
+test('public connection omits mailbox states, tokens, challenges and event queues', async () => {
+  const w = await worker(); await login(w);
+  w.state().connection.challenge = { nonce: 'secret-challenge' };
+  const result = await w.handle({ type: 'MW_CONNECTION' }, w.mail);
+  assert.equal(JSON.stringify(result).includes('session-token'), false); assert.equal(JSON.stringify(result).includes('secret-challenge'), false);
+  assert.equal(result.mailboxes, undefined); assert.equal(result.events, undefined);
+});
+test('logout stops local detection even when central logout is unreachable', async () => {
+  const w = await worker(); await login(w);
+  w.state().events = [{ id: 'queued', owner: w.state().connection.owner, delivery: 'pending' }];
+  w.setFetch(async () => { throw new Error('network offline'); });
+  const result = await w.handle({ type: 'MW_LOGOUT' }, w.ui);
+  assert.equal(result.connection.authenticated, false); assert.equal(w.state().events.length, 1); assert.equal(w.state().connection.token, '');
+});
+test('switching device credentials never uploads another identity’s pending events', async () => {
+  const w = await worker(); await login(w); const owner = w.state().connection.owner;
+  w.state().events = [{ id: 'old-event', owner, delivery: 'pending', attempts: 0 }];
+  await w.handle({ type: 'MW_LOGOUT' }, w.ui); await login(w, 'plugin-02');
+  assert.equal(w.state().events[0].delivery, 'pending'); assert.notEqual(w.state().connection.owner, owner);
+  assert.equal(w.requests.filter(r => r.url.endsWith('/events')).length, 0);
+  await w.handle({ type: 'MW_LOGOUT' }, w.ui); await login(w);
+  assert.equal(w.state().events[0].delivery, 'uploaded');
+});
+test('explicit acknowledgements are required before an event leaves pending', async () => {
+  const w = await worker(); await login(w); const owner = w.state().connection.owner;
+  w.state().events = [{ id: 'event', owner, delivery: 'pending', attempts: 0 }];
+  w.setFetch(async url => w.ok('plugin-01', 'device-01', url.endsWith('/events') ? { acknowledged_event_ids: ['unrelated'] } : {}));
+  await w.sync(w.state(), true); assert.equal(w.state().events[0].delivery, 'pending');
+  w.setFetch(async url => w.ok('plugin-01', 'device-01', url.endsWith('/events') ? { acknowledged_event_ids: ['event'] } : {}));
   await w.sync(w.state(), true); assert.equal(w.state().events[0].delivery, 'uploaded');
-  assert.equal(w.requests.find(r => r.url.endsWith('/events')).body.events[0].event_id, 'event-a');
 });
-test('unauthorized response preserves pending events and requires pairing', async () => {
-  const w = await worker(); const state = w.state(); state.connection = { server: 'https://example.test', serverId: 'a', status: 'connected' };
-  state.events = [{ id: 'a', delivery: 'pending', destination: 'a' }]; w.store.mailwatchCredentials = { token: 'old' };
-  w.setFetch(async () => new Response('', { status: 401 })); await w.sync(state);
-  assert.equal(w.state().connection.status, 'auth_required'); assert.equal(w.state().events[0].delivery, 'pending');
+test('a central identity mismatch never acknowledges an upload', async () => {
+  const w = await worker(); await login(w);
+  w.state().events = [{ id: 'event', owner: w.state().connection.owner, delivery: 'pending', attempts: 0 }];
+  w.setFetch(async url => url.endsWith('/events') ? w.ok('plugin-01', 'other-device', { acknowledged_event_ids: ['event'] }) : w.ok());
+  await w.sync(w.state(), true); assert.equal(w.state().events[0].delivery, 'pending');
 });
-test('same-server re-pairing can recover a revoked credential with pending events', async () => {
-  const w = await worker(); w.state().connection = { status: 'auth_required', server: 'https://example.test', serverId: 'a' };
-  w.state().events = [{ id: 'a', delivery: 'pending', destination: 'a', attempts: 0 }];
-  w.setFetch(async url => ok(url.endsWith('/enroll') ? { access_token: 'new-token', server_id: 'a' } : { acknowledged_event_ids: ['a'] }));
-  await w.handle({ type: 'MW_PAIR', server: 'https://example.test', code: 'new-code' }, w.trusted);
-  assert.equal(w.store.mailwatchCredentials.token, 'new-token'); assert.equal(w.state().events[0].delivery, 'uploaded');
-});
-test('rate limits honor retry time and do not replay old heartbeats', async () => {
-  const w = await worker(); w.state().connection = { server: 'https://example.test', serverId: 'a', status: 'connected' }; w.store.mailwatchCredentials = { token: 'a' };
+test('rate limits back off and the next heartbeat is newly generated', async () => {
+  const w = await worker(); await login(w); w.requests.length = 0;
   w.setFetch(async () => new Response('', { status: 429, headers: { 'Retry-After': '120' } }));
-  const before = Date.now(); await w.sync(w.state()); assert.ok(w.state().connection.nextRetryAt >= before + 120000);
+  const before = Date.now(); await w.sync(w.state(), true);
+  assert.ok(w.state().connection.retryAt >= before + 120000);
   await w.sync(w.state()); assert.equal(w.requests.length, 1);
-  w.setFetch(async () => ok({})); await w.sync(w.state(), true);
+  w.setFetch(async () => w.ok()); await w.sync(w.state(), true);
   assert.equal(w.requests[1].body.sequence, w.requests[0].body.sequence + 1);
 });
-test('unsupported server protocol is an error, not an online status', async () => {
-  const w = await worker(); w.setFetch(async () => new Response(JSON.stringify({ ok: true, token: 'legacy' })));
-  await assert.rejects(w.handle({ type: 'MW_PAIR', server: 'https://example.test', code: 'a' }, w.trusted), /协议/);
-  assert.equal(w.state().connection.status, 'local');
+test('central revocation requires credentials again and leaves pending events intact', async () => {
+  const w = await worker(); await login(w); w.state().events = [{ id: 'queued', owner: w.state().connection.owner, delivery: 'pending' }];
+  w.setFetch(async () => new Response('', { status: 403 })); await w.sync(w.state(), true);
+  assert.equal(w.state().connection.status, 'auth_required'); assert.equal(C.active(w.state()), false); assert.equal(w.state().events[0].delivery, 'pending');
 });
-test('closed tabs are removed and mailbox health reflects closure', async () => {
-  const w = await worker(); const s = w.state();
-  s.mailboxes.push({ id: 'a', provider: 'gmail', email: 'shop@gmail.com', enabled: true, baselined: true, seen: {} });
-  s.tabs[9] = { tabId: 9, mailboxId: 'a', status: 'watching', at: Date.now(), lastScanAt: Date.now() };
-  await w.scanTabs(s); assert.equal(Object.keys(w.state().tabs).length, 0);
-  const result = await w.handle({ type: 'MW_STATE' }, w.trusted); assert.equal(result.state.mailboxes[0].health.code, 'closed');
+test('closing a mailbox is reported internally without exposing webpage status in the UI', async () => {
+  const w = await worker(); await login(w);
+  const s = w.state(), owner = s.connection.owner;
+  s.mailboxes.push({ id: 'box', owner, provider: 'gmail', email: 'test@gmail.com', seen: {} });
+  s.tabs[9] = { mailboxId: 'box', owner, status: 'watching', at: Date.now() };
+  await w.scanTabs(s); assert.equal(C.mailboxHealth(w.state(), w.state().mailboxes[0]).status, 'closed');
+  const ui = await w.handle({ type: 'MW_CONNECTION' }, w.ui); assert.equal(ui.connection.mailboxes, undefined);
 });
-test('a stale document cannot submit a scan for a newly switched mailbox', async () => {
-  const w = await worker(); w.tabs.push({ id: 1, url: w.mailbox.url });
-  w.reports.set(1, { documentNonce: 'new', pageUrl: w.mailbox.url, email: 'new@gmail.com' });
-  await assert.rejects(w.handle({ type: 'MW_REPORT', report: { documentNonce: 'old', pageUrl: w.mailbox.url, email: 'old@gmail.com' } }, w.mailbox), /切换/);
+test('old store-management messages are no longer supported', async () => {
+  const w = await worker();
+  for (const type of ['MW_SCAN', 'MW_OPEN_DASHBOARD', 'MW_BIND_TAB', 'MW_ADD_MAILBOX', 'MW_PAIR']) await assert.rejects(w.handle({ type }, w.ui), /未知插件操作/);
 });
-test('verification needs a pending request and the exact sender; detection alone is not verification', async () => {
-  const w = await worker(); const state = w.state();
-  state.connection = { server: 'https://example.test', serverId: 'central', status: 'connected' };
-  state.mailboxes.push({ id: 'box', email: 'test@gmail.com', provider: 'gmail', enabled: true, shop: 'Test', startedAt: Date.now(), seen: {} });
-  state.verificationRequests = [{ id: 'check1', mailbox_id: 'box', sender: 'verify@example.test', expires_at: new Date(Date.now() + 60000).toISOString() }];
-  const tab = { id: 1, url: 'https://mail.google.com/mail/u/0/#inbox' };
-  const report = { provider: 'gmail', email: 'test@gmail.com', status: 'watching', rowCount: 1, messages: [{
-    subject: '[Etsy Sentinel Verify:check1] random_secret_123456789', sender: 'wrong@example.test', sourceId: 'test', identityKind: 'message'
-  }] };
-  await w.processSnapshot(state, tab, report); assert.equal(state.events.length, 0);
-  report.messages[0].sender = 'verify@example.test'; await w.processSnapshot(state, tab, report);
-  assert.equal(state.events.length, 1); assert.equal(state.events[0].kind, 'verification'); assert.equal(state.mailboxes[0].verifiedAt, undefined);
-  await w.processSnapshot(state, tab, report); assert.equal(state.events.length, 1);
-  const publicResult = await w.handle({ type: 'MW_STATE' }, w.mailbox);
-  assert.equal(JSON.stringify(publicResult).includes('random_secret_123456789'), false);
-});
-test('server confirmation verifies only an already acknowledged verification event', async () => {
-  const w = await worker(); const state = w.state();
-  state.connection = { server: 'https://example.test', serverId: 'central', status: 'connected' };
-  state.mailboxes.push({ id: 'box', email: 'test@gmail.com', provider: 'gmail', enabled: true, baselined: true, seen: {} });
-  state.events.push({ id: 'check-event', kind: 'verification', requestId: 'check1', mailboxId: 'box', destination: 'central', delivery: 'pending', attempts: 0 });
-  w.store.mailwatchCredentials = { token: 'private' };
-  w.setFetch(async url => ok(url.endsWith('/events') ? { acknowledged_event_ids: ['check-event'] } : { verification_results: [{ request_id: 'check1', mailbox_id: 'box', verified: true }] }));
-  await w.sync(state); assert.equal(w.state().mailboxes[0].verifiedAt, undefined);
-  await w.sync(w.state(), true); assert.ok(w.state().mailboxes[0].verifiedAt);
-});
-test('event delivery failures back off independently while heartbeat remains healthy', async () => {
-  const w = await worker(); w.state().connection = { server: 'https://example.test', serverId: 'a', status: 'connected' };
-  w.state().events = [{ id: 'e', delivery: 'pending', destination: 'a', attempts: 0 }]; w.store.mailwatchCredentials = { token: 'a' };
-  w.setFetch(async url => url.endsWith('/events') ? new Response('', { status: 503 }) : ok({}));
-  await w.sync(w.state()); const first = w.state().connection.uploadRetryAt;
-  assert.equal(w.state().connection.status, 'connected'); assert.equal(w.state().connection.uploadFailures, 1);
-  await w.sync(w.state()); assert.equal(w.requests.filter(r => r.url.endsWith('/heartbeat')).length, 2);
-  assert.equal(w.requests.filter(r => r.url.endsWith('/events')).length, 1);
-  await w.sync(w.state(), true); assert.equal(w.state().connection.uploadFailures, 2); assert.ok(w.state().connection.uploadRetryAt > first);
+test('v0.1 upgrade archives old state and requires provisioned plugin credentials', async () => {
+  const old = { schema: 1, events: [{ id: 'old-pending' }], connection: { server: 'https://example.test' }, settings: { panelCollapsed: true } };
+  const w = await worker({ mailwatchState: old, mailwatchCredentials: { token: 'old-token' } });
+  assert.equal(w.state().schema, 2); assert.equal(C.active(w.state()), false); assert.equal(w.store.mailwatchV1Archive.events[0].id, 'old-pending');
+  assert.equal(w.store.mailwatchCredentials, null); assert.equal(w.state().panelCollapsed, true);
 });

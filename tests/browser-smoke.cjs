@@ -8,6 +8,8 @@ const extension = path.resolve(__dirname, '..');
 const output = path.join(extension, 'artifacts', 'screenshots');
 const bundled = path.join(os.homedir(), 'Library/Caches/ms-playwright/chromium-1117/chrome-mac/Chromium.app/Contents/MacOS/Chromium');
 const browserPath = process.env.MW_BROWSER_PATH || (fs.existsSync(bundled) ? bundled : undefined);
+const https = require('node:https');
+const { execFileSync } = require('node:child_process');
 const stamp = new Date().toISOString();
 const gmailRow = (id, title = 'Etsy Conversation with Test Buyer') => `<tr class="zA" data-legacy-message-id="${id}" data-legacy-thread-id="thread-${id}"><td class="yW"><span class="zF" email="conversations@mail.etsy.com">Etsy</span></td><td><span class="bog">${title}</span></td><td class="xW"><span title="${stamp}">Now</span></td></tr>`;
 const outlookRow = (id, time = stamp) => `<div role="option" aria-selected="false" data-convid="${id}"><span title="conversations@mail.etsy.com">Etsy</span><span>Etsy Conversation with Test Buyer</span><time datetime="${time}">Now</time></div>`;
@@ -16,96 +18,105 @@ const gmail = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1>G
 const outlook = `<!doctype html><meta charset="utf-8">${fixtureStyle}<header><h1>Outlook · 隔离测试页面</h1><button id="O365_MainLink_Me" aria-label="Account manager for test-shop@outlook.com">Test account</button></header><div role="listbox">${outlookRow('baseline')}</div>`;
 
 (async () => {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'etsy-sentinel-smoke-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'etsy-credential-smoke-'));
   fs.mkdirSync(output, { recursive: true });
+  // Ephemeral TLS key for an isolated local fixture. This is never packaged or committed.
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(profile, 'key.pem'),
+    '-out', path.join(profile, 'cert.pem'), '-subj', '/CN=outlook.live.com', '-days', '1'], { stdio: 'ignore' });
+  const central = { heartbeats: [], events: [], token: '', failLogout: false };
+  const server = https.createServer({ key: fs.readFileSync(path.join(profile, 'key.pem')), cert: fs.readFileSync(path.join(profile, 'cert.pem')) }, (req, res) => {
+    let text = '';
+    req.on('data', chunk => { text += chunk; });
+    req.on('end', () => {
+      const body = JSON.parse(text || '{}');
+      const reply = (code, extra = {}) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: code === 200, protocol_version: 2, account: 'plugin-01', device_id: 'provisioned-device-01', ...extra })); };
+      if (req.url.endsWith('/login')) {
+        if (body.account !== 'plugin-01' || body.password !== 'assigned-test-secret') return reply(401);
+        central.token = 'fixture-session-' + Date.now(); return reply(200, { access_token: central.token });
+      }
+      if (req.headers.authorization !== `Bearer ${central.token}` || body.device_id !== 'provisioned-device-01') return reply(401);
+      if (req.url.endsWith('/heartbeat')) { central.heartbeats.push(body); return reply(200); }
+      if (req.url.endsWith('/events')) { central.events.push(...body.events); return reply(200, { acknowledged_event_ids: body.events.map(e => e.event_id) }); }
+      if (req.url.endsWith('/logout')) return reply(central.failLogout ? 503 : 200);
+      reply(404);
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `https://outlook.live.com:${server.address().port}`;
+  const errors = [];
+  const launch = async () => {
+    const ctx = await chromium.launchPersistentContext(profile, { executablePath: browserPath, headless: false,
+      ignoreDefaultArgs: ['--disable-extensions'], ignoreHTTPSErrors: true,
+      args: ['--headless=new', '--no-proxy-server', '--ignore-certificate-errors', '--host-resolver-rules=MAP outlook.live.com 127.0.0.1,MAP mail.google.com 127.0.0.1',
+        `--disable-extensions-except=${extension}`, `--load-extension=${extension}`], viewport: { width: 1150, height: 760 } });
+    ctx.setDefaultTimeout(15000);
+    ctx.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+    await ctx.route('https://mail.google.com/**', route => route.fulfill({ contentType: 'text/html', body: gmail }));
+    await ctx.route('https://outlook.live.com/mail/**', route => route.fulfill({ contentType: 'text/html', body: outlook }));
+    return ctx;
+  };
   let context;
   try {
-    context = await chromium.launchPersistentContext(profile, { executablePath: browserPath, headless: false,
-      ignoreDefaultArgs: ['--disable-extensions'],
-      args: ['--headless=new', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`], viewport: { width: 1440, height: 1080 } });
-    context.setDefaultTimeout(15000);
-    const errors = [];
-    context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
-    await context.route('https://mail.google.com/**', route => route.fulfill({ contentType: 'text/html', body: gmail }));
-    await context.route('https://outlook.live.com/**', route => route.fulfill({ contentType: 'text/html', body: outlook }));
-    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    context = await launch();
+    let worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const id = new URL(worker.url()).hostname;
-    const dashboard = await context.newPage(); await dashboard.goto(`chrome-extension://${id}/dashboard.html`);
-    await dashboard.locator('#stat-total').waitFor();
-    await dashboard.waitForFunction(() => document.querySelector('#device-id').textContent.length > 0);
-    await dashboard.screenshot({ path: path.join(output, 'dashboard-empty.png'), fullPage: true });
     const inbox = await context.newPage(); await inbox.goto('https://mail.google.com/mail/u/0/#inbox');
-    await inbox.locator('#etsy-sentinel #shop').waitFor({ state: 'visible' });
-    await inbox.locator('#etsy-sentinel #shop').fill('测试店铺 · Gmail');
-    await inbox.locator('#etsy-sentinel button.primary').click();
-    await inbox.waitForFunction(() => document.querySelector('#etsy-sentinel').shadowRoot.querySelector('#status-label').textContent.includes('测试店铺'));
-    const command = message => dashboard.evaluate(message => chrome.runtime.sendMessage(message), message);
-    let result = await command({ type: 'MW_SCAN' });
-    assert.equal(result.state.mailboxes.length, 1); assert.equal(result.state.events.length, 0, 'baseline must not notify');
-    await inbox.evaluate(row => document.querySelector('tbody').insertAdjacentHTML('beforeend', row), gmailRow('new-1'));
-    result = await command({ type: 'MW_SCAN' });
-    assert.equal(result.state.events.length, 1); assert.equal(result.state.events[0].delivery, 'local');
-    result = await command({ type: 'MW_SCAN' }); assert.equal(result.state.events.length, 1, 'repeat must deduplicate');
-    await inbox.evaluate(() => document.querySelector('tr.zA').classList.toggle('zE'));
-    result = await command({ type: 'MW_SCAN' }); assert.equal(result.state.events.length, 1, 'unread change must not notify');
-    await inbox.evaluate(row => document.querySelector('tbody').insertAdjacentHTML('beforeend', row), gmailRow('new-2'));
-    result = await command({ type: 'MW_SCAN' }); assert.equal(result.state.events.length, 2, 'same subject, different mail must notify');
-    await inbox.locator('#etsy-sentinel #collapse').click();
-    await inbox.locator('#etsy-sentinel #expand').waitFor({ state: 'visible' }); await inbox.locator('#etsy-sentinel #expand').click();
-    await inbox.screenshot({ path: path.join(output, 'gmail-floating-panel.png') });
     const outlookPage = await context.newPage(); await outlookPage.goto('https://outlook.live.com/mail/0/inbox');
-    await outlookPage.locator('#etsy-sentinel #shop').waitFor({ state: 'visible' });
-    await outlookPage.locator('#etsy-sentinel #shop').fill('测试店铺 · Outlook'); await outlookPage.locator('#etsy-sentinel button.primary').click();
-    await outlookPage.waitForFunction(() => document.querySelector('#etsy-sentinel').shadowRoot.querySelector('#status-label').textContent.includes('测试店铺'));
-    result = await command({ type: 'MW_SCAN' }); assert.equal(result.state.mailboxes.length, 2);
-    assert.equal(result.state.mailboxes.find(b => b.provider === 'outlook').health.code, 'limited');
+    const popup = await context.newPage(); await popup.setViewportSize({ width: 304, height: 480 });
+    await popup.goto(`chrome-extension://${id}/connection.html`);
+    await popup.locator('#account').waitFor();
+    await popup.locator('body').screenshot({ path: path.join(output, 'lightweight-login.png') });
+    await popup.locator('#account').fill('plugin-01');
+    await popup.locator('summary').click(); await popup.locator('#server').fill(base);
+    await popup.locator('#password').fill('incorrect-fixture-password'); await popup.locator('#login-button').click();
+    await popup.locator('#message').filter({ hasText: '凭证无效' }).waitFor();
+    assert.equal(await popup.locator('#password').inputValue(), '');
+    assert.equal(await popup.locator('#connected').isVisible(), false);
+    await popup.locator('#password').fill('assigned-test-secret');
+    await popup.locator('#password-eye').click(); assert.equal(await popup.locator('#password').getAttribute('type'), 'text');
+    await popup.locator('#login-button').click();
+    await popup.locator('#connected').waitFor({ state: 'visible' });
+    assert.equal(await popup.locator('#connected-account').textContent(), 'plugin-01');
+    assert.equal(await popup.locator('#password').inputValue(), '');
+    const read = () => worker.evaluate(async () => (await MailWatchStorage.get('mailwatchState')).mailwatchState);
+    const tick = () => worker.evaluate(async () => { await serial(tick); });
+    let state = await read(); assert.equal(state.mailboxes.length, 2); assert.equal(state.events.length, 0);
+    assert.equal(JSON.stringify(state).includes('assigned-test-secret'), false);
+    await inbox.evaluate(row => document.querySelector('tbody').insertAdjacentHTML('beforeend', row), gmailRow('new-1'));
+    await tick(); state = await read();
+    assert.equal(state.events.length, 1); assert.equal(state.events[0].delivery, 'uploaded'); assert.equal(central.events.length, 1);
+    await tick(); assert.equal(central.events.length, 1, 'repeat scan must not upload duplicates');
     await outlookPage.evaluate(row => document.querySelector('[role=listbox]').insertAdjacentHTML('beforeend', row), outlookRow('new-thread'));
-    result = await command({ type: 'MW_SCAN' }); assert.equal(result.state.events.length, 3);
-    await outlookPage.evaluate(() => document.querySelector('#O365_MainLink_Me').setAttribute('aria-label', 'Account manager for other@outlook.com'));
-    result = await command({ type: 'MW_SCAN' });
-    assert.equal(result.state.mailboxes.find(b => b.provider === 'outlook').health.code, 'account_mismatch');
-    await outlookPage.evaluate(() => document.querySelector('#O365_MainLink_Me').setAttribute('aria-label', 'Account manager for test-shop@outlook.com'));
-    await command({ type: 'MW_SCAN' });
-    await dashboard.reload(); await dashboard.waitForFunction(() => document.querySelector('#stat-total').textContent === '2');
-    await dashboard.screenshot({ path: path.join(output, 'dashboard-monitoring.png'), fullPage: true });
-    await dashboard.getByRole('button', { name: '设备与连接' }).click();
-    await dashboard.locator('#device-name').fill('工作室 · Chrome'); await dashboard.getByRole('button', { name: '保存设备名称' }).click();
-    await dashboard.waitForFunction(() => document.querySelector('#sidebar-device').textContent === '工作室 · Chrome');
-    await dashboard.screenshot({ path: path.join(output, 'device-settings.png'), fullPage: true });
-    await dashboard.getByRole('button', { name: '邮箱总览' }).click();
-    const popup = await context.newPage(); await popup.setViewportSize({ width: 390, height: 650 }); await popup.goto(`chrome-extension://${id}/popup.html`);
-    await popup.waitForFunction(() => document.querySelector('#popup-total').textContent === '2');
-    await popup.screenshot({ path: path.join(output, 'toolbar-popup.png'), fullPage: true });
-    await inbox.close(); result = await command({ type: 'MW_SCAN' });
-    assert.equal(result.state.mailboxes.find(b => b.provider === 'gmail').health.code, 'closed');
-    await outlookPage.evaluate(() => { location.hash = '#other'; });
-    // Outlook route classification depends on pathname, not hash. Change it to another folder.
-    await outlookPage.evaluate(() => history.replaceState(null, '', '/mail/0/sentitems'));
-    result = await command({ type: 'MW_SCAN' });
-    assert.equal(result.state.mailboxes.find(b => b.provider === 'outlook').health.code, 'wrong_folder');
-    // Leave no external pages open before testing persistence through a browser restart.
+    await tick(); assert.equal(central.events.length, 2); assert.equal(central.events[1].shop, undefined);
+    const panel = inbox.frameLocator('#etsy-sentinel iframe');
+    await panel.locator('#connected').waitFor({ state: 'visible' });
+    assert.doesNotMatch(await panel.locator('body').innerText(), /店铺|立即检查|管理邮箱|网页状态|监听中/);
+    assert.equal(await inbox.evaluate(() => { try { return document.querySelector('#etsy-sentinel').shadowRoot.querySelector('iframe').contentDocument?.querySelector('#password')?.value; } catch (_) { return undefined; } }), undefined, 'mail page cannot read the cross-origin password field');
+    await inbox.screenshot({ path: path.join(output, 'lightweight-connected-panel.png') });
+    await inbox.locator('#etsy-sentinel #collapse').click(); await inbox.locator('#etsy-sentinel #expand').waitFor({ state: 'visible' });
+    await inbox.locator('#etsy-sentinel #expand').click();
+    await popup.locator('body').screenshot({ path: path.join(output, 'lightweight-connected.png') });
+    await inbox.close(); await tick();
+    const health = central.heartbeats.at(-1).mailboxes.find(b => b.provider === 'gmail'); assert.equal(health.status, 'closed');
+    central.failLogout = true;
+    await popup.locator('#logout-button').click(); await popup.locator('#login-form').waitFor({ state: 'visible' });
+    state = await read(); assert.equal(state.connection.token, '');
+    central.failLogout = false;
+    await popup.locator('#password').fill('assigned-test-secret'); await popup.locator('#login-button').click();
+    await popup.locator('#connected').waitFor({ state: 'visible' });
     await outlookPage.close();
-    await context.close();
-    context = await chromium.launchPersistentContext(profile, { executablePath: browserPath, headless: false,
-      ignoreDefaultArgs: ['--disable-extensions'], args: ['--headless=new', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
-      viewport: { width: 1440, height: 1080 } });
-    const reopened = await context.newPage(); await reopened.goto(`chrome-extension://${id}/dashboard.html`);
-    await reopened.waitForFunction(() => document.querySelector('#stat-total').textContent === '2');
-    const restored = await reopened.evaluate(() => chrome.runtime.sendMessage({ type: 'MW_STATE' }));
-    assert.equal(restored.state.events.length, 3); assert.equal(restored.state.settings.deviceName, '工作室 · Chrome');
-    assert.deepEqual(errors, [], 'browser pages must not throw');
-    console.log('Browser smoke passed: extension load, both adapters, binding, baseline, deduplication, account switch, closure, folder scope, UI forms, popup and persistence through browser restart.');
+    await context.close(); context = await launch();
+    worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+    const reopened = await context.newPage(); await reopened.goto(`chrome-extension://${id}/connection.html`);
+    await reopened.locator('#connected').waitFor({ state: 'visible' });
+    const restored = await worker.evaluate(async () => (await MailWatchStorage.get('mailwatchState')).mailwatchState);
+    assert.equal(restored.connection.account, 'plugin-01'); assert.equal(restored.events.length, 2);
+    assert.deepEqual(errors, []);
+    console.log('Browser smoke passed: minimal credential UI, real local TLS login/heartbeat/events, invalid credentials, password isolation, auto-discovery, both adapters, deduplication, closure, offline logout and restart persistence.');
     console.log('Screenshots:', output);
-  } catch (error) {
-    if (context) for (const page of context.pages()) {
-      if (page.url().includes('dashboard.html')) console.error('Dashboard diagnostic:', await page.evaluate(async () => ({
-        toast: document.querySelector('#toast')?.textContent, hidden: document.hidden,
-        response: await chrome.runtime.sendMessage({ type: 'MW_STATE' })
-      })).catch(e => e.message));
-    }
-    throw error;
   } finally {
     if (context) await context.close();
+    await new Promise(resolve => server.close(resolve));
     fs.rmSync(profile, { recursive: true, force: true });
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

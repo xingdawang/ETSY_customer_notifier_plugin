@@ -1,101 +1,101 @@
-# 插件中央协议 v1（客户端已实现，服务器待接入）
+# 插件专用凭证协议 v2
 
-所有接口位于用户配置的 `server_base/api/extension/v1/`，使用 POST JSON。必须返回有效 HTTP 成功码及 `{"ok":true,"protocol_version":1,...}`。重定向不跟随；请求超时 7 秒；除 enroll 外使用 `Authorization: Bearer <设备令牌>`，不使用网站会话 Cookie。
+客户端已实现；配套中央服务仍待接入。该凭证标识每个插件，与邮箱登录和网站用户账户分开管理。
 
-## enroll
+接口：配置地址下的 `/api/extension/v2/{login,heartbeat,events,logout}`。全部 POST JSON，除 login 外使用 `Authorization: Bearer <access_token>`。不跟随重定向，不使用网站登录 Cookie。HTTP 成功、`ok:true` 和 `protocol_version:2` 必须同时满足。
 
-输入：`protocol_version, pairing_code, device_id, device_name, extension_version`。
+## 1. 预设凭证
 
-返回：`ok, protocol_version, access_token, server_id`。`server_id` 为服务器身份的稳定标识。
+中央管理员为每个插件创建独立账户、密码、稳定 `device_id` 和启用状态。密码使用安全哈希保存，验证及错误限流在服务器执行。不要用插件上报的邮箱或本地 UUID 作为授权依据。
 
-服务器负责：管理员生成有期限的一次性配对码，校验用户与设备权限、消费配对码、限制可访问邮箱、颁发可吊销的设备令牌、限流及审计。邮箱 ID 是浏览器本地 UUID，服务器必须按设备归属校验，不能仅凭客户端报告的邮箱地址授权。
+`installation_id` 为本浏览器扩展安装时生成的 UUID。建议首次验证时将专用凭证绑定到安装，重复安装或更换电脑由管理员重置，避免同一凭证被无意复制到多个实例。具体绑定策略由中央决定。
 
-## heartbeat
+## 2. 登录验证
 
-输入包括：
-
-```json
-{
-  "protocol_version": 1,
-  "device_id": "UUID",
-  "session_id": "本次 worker 生命周期的随机编号",
-  "sequence": 12,
-  "extension_version": "0.1.0",
-  "device_name": "工作室 · Edge",
-  "sent_at": "2026-10-15T12:00:00Z",
-  "previous_challenge": null,
-  "mailboxes": [{
-    "mailbox_id": "本地邮箱 UUID",
-    "provider": "outlook",
-    "email": "shop@outlook.com",
-    "shop": "店铺名",
-    "enabled": true,
-    "status": "limited",
-    "last_scan_at": 1792065600000,
-    "coverage": "visible_rows",
-    "last_verified_at": null,
-    "open_tab_count": 1
-  }]
-}
-```
-
-`status` 可能为 `watching, limited, initializing, paused, closed, stale, unavailable, sleeping, loading, login_required, identity_unknown, account_mismatch, wrong_folder, view_unavailable`。`watching` 也仅代表当前已渲染页面可读，不能据此声称全部收信正常。
-
-返回可选 `challenge: {id,nonce,expires_at}`；插件在下一次新生成的心跳回传。服务器需要先验证挑战新鲜度、序号和会话，再更新存活时间，不能把旧请求的接收时间当作新的健康证据。新会话需按有效设备凭证建立挑战，不能简单永久拒绝新的 worker 会话。
-
-每次心跳现生成；失败后不会重放旧心跳。临时失败按 30 秒起的指数退避，最长约 15 分钟，并遵守更长的 `Retry-After`；手动同步可主动重试。HTTP 401 / 403 停止自动续试并要求重新配对。
-
-建议服务器将传输在线与扫描新鲜度分开计算；90 秒过期、3 分钟失联可作为起始参数。独立定时器发现所有可用采集实例失联时才发邮箱级告警；同类故障合并，恢复后解除。仅有浏览器页面上的 JavaScript 计时器不能实现这个功能。
-
-## events
-
-输入：`protocol_version, device_id, events`。每批最多 50 项。每项包含稳定 `event_id`（也保留 `id`）、`mailboxId,provider,email,shop,kind,subject,detectedAt` 等必要元数据。
-
-买家消息：`kind=buyer_message`，附 `category,sender,confidence,identityKind,receivedAt`。`confidence=display_name` 只表示名称加主题的弱分类。时间未知时 `receivedAt=null`，不可用检测时间伪装收信时间。
-
-事件还包含 `sourceId` 与 `sourceRevision`（规范化邮件身份或修订信息的 SHA-256），用于中央跨实例去重。客户端的 `event_id` 包含本地邮箱 UUID，不可用作唯一的跨电脑标识。
-
-服务器持久化、完成设备和邮箱权限校验及幂等入库后返回：
-
-```json
-{"ok":true,"protocol_version":1,"acknowledged_event_ids":["已持久化的 event_id"]}
-```
-
-未确认的记录保持 pending，并沿用同一 ID 重试。未知确认 ID 忽略。服务器应在同一事务中写事件和通知队列。传输重试按设备 / 邮箱归属及事件 ID 幂等；跨实例业务去重按规范化邮箱身份、provider 和 sourceId（逐邮件标识时）或 sourceRevision（后备特征时）处理。后备特征仍可能碰撞或漏分辨，不能承诺网页模式下跨设备绝对去重。
-
-已上报只表示中央接收；飞书发送、限流、结果不确定及重试由服务器单独处理。不要把同一主题视为同一封邮件。
-
-## 测试邮件验证
-
-心跳返回可选：
+请求：
 
 ```json
 {
-  "verification_requests": [{
-    "id": "request_123",
-    "mailbox_id": "本地邮箱 UUID",
-    "sender": "verify@example.com",
-    "expires_at": "2026-10-15T12:10:00Z"
-  }]
+  "protocol_version": 2,
+  "account": "plugin-001",
+  "password": "服务器预先分配的插件密码",
+  "installation_id": "本地安装 UUID",
+  "extension_version": "0.2.0"
 }
 ```
 
-请求 ID 仅含字母、数字、下划线和连字符，最长 64 字符。服务器通过独立发信端发送主题：
-
-```text
-[Etsy Sentinel Verify:request_123] 至少16位的随机字母数字下划线或连字符
-```
-
-**随机码不出现在 verification_requests 或其他下发指令中。** 插件必须从当前账号匹配的可读列表中识别主题和真实发件地址，通过 events 上报 `kind=verification, requestId, code`。不发桌面买家提醒。
-
-服务器核对邮箱、随机码、TTL 和一次性使用后，在之后心跳返回：
+验证成功：
 
 ```json
-{"verification_results":[{"request_id":"request_123","mailbox_id":"本地邮箱 UUID","verified":true}]}
+{
+  "ok": true,
+  "protocol_version": 2,
+  "account": "plugin-001",
+  "device_id": "中央分配的稳定插件 ID",
+  "access_token": "有期限且可撤销的会话令牌"
+}
 ```
 
-插件只在对应验证事件已经被确认上传、且中央明确确认时显示验证时间。服务器应重复返回确认结果，直到邮箱心跳的 `last_verification_id` 回传对应请求 ID，避免确认结果因一次超时丢失。未收到、未通过或超时不自动视为成功。系统验证证明当时检测链路可用，不能代替 Etsy 业务邮件分类测试。
+返回的 account 必须与提交值一致，device_id 非空。普通网页登录成功、HTTP 200 HTML、旧 v1 配对结果都不等于插件身份验证。凭证错误或停用返回 401 / 403。插件不保存密码，后续只使用设备会话令牌；令牌失效后要求重新验证。
 
-## 接入限制
+## 3. 在线心跳
 
-当前版本没有服务器实现，没有邮件 API OAuth，也没有中央飞书发送改造。设备凭证不是硬件认证；邮箱 DOM 身份也不是服务商签发的账号证明。授权员工、网站管理员和设备之间的边界应在后续服务端实现中落实。
+请求包含 `protocol_version,account,device_id,installation_id,session_id,sequence,extension_version,sent_at,previous_challenge,pending_event_count,last_upload_error,mailboxes,unidentified_pages`。
+
+mailboxes 中每项为：
+
+```json
+{
+  "mailbox_id": "本地按插件身份及邮箱计算的标识",
+  "provider": "outlook",
+  "email": "mailbox@outlook.com",
+  "status": "limited",
+  "last_scan_at": 1792065600000,
+  "open_tab_count": 1,
+  "coverage": "visible_rows"
+}
+```
+
+没有 shop / 店铺名称字段，无需手动绑定。无法识别邮箱地址的页面计入 unidentified_pages，不把这种情况当作邮件检测正常。
+
+响应必须包含：
+
+```json
+{"ok":true,"protocol_version":2,"account":"plugin-001","device_id":"中央分配的稳定插件 ID"}
+```
+
+服务器通过令牌确定身份并核对请求中的 account / device_id；插件也核对响应中的身份。可返回 `challenge:{id,nonce,expires_at}`，插件在下一次新心跳回传。中央验证挑战、序号、安装和会话后才更新在线时间；客户端时钟和旧心跳补传不能刷新在线证据。
+
+插件约每 30 秒生成心跳，失败指数退避，尊重 Retry-After。中央可从 90 秒过期、3 分钟失联开始配置独立检测任务；应给延迟容差，不能把浏览器关闭、电脑休眠和断网都断言为同一种原因。没有网页状态界面，不影响后台报告这些事实。
+
+## 4. 邮件事件
+
+请求：`protocol_version,account,device_id,installation_id,events`，每批最多 50 项。
+
+每项包括 `event_id,id,mailboxId,provider,email,kind,subject,category,confidence,sender,sourceId,sourceRevision,identityKind,receivedAt,detectedAt,attempts`。不含店铺名、密码、令牌或正文。`confidence=display_name` 表示弱分类候选；`receivedAt=null` 表示无法确认邮件到达时间。
+
+持久化确认：
+
+```json
+{
+  "ok": true,
+  "protocol_version": 2,
+  "account": "plugin-001",
+  "device_id": "中央分配的稳定插件 ID",
+  "acknowledged_event_ids": ["已持久入库的 event_id"]
+}
+```
+
+插件只完成明确确认且身份一致的事件；其他记录保持原编号重试。中央将事件和飞书通知队列在同一事务中写入。传输幂等用设备及 event_id；跨实例业务去重用规范化邮箱、provider、逐邮件 sourceId 或后备 sourceRevision。后备网页特征不能保证绝对去重。
+
+队列与服务器地址、专用账户、稳定 device_id 关联。切换凭证不会把旧事件交给新插件身份；重新使用相同身份可继续原队列。
+
+## 5. 退出与停用
+
+logout 请求：`protocol_version,account,device_id,installation_id`，中央撤销当前会话令牌后按同一身份格式返回成功。网络失败时，插件仍立即在本地清除令牌并停止采集，中央通过心跳超时发现离线。服务器应设置令牌期限，支持管理员停用及撤销。
+
+HTTP 401 / 403 会使插件停止采集并要求重新输入专用凭证。服务端错误正文不直接显示，避免回显敏感信息。
+
+## 边界
+
+心跳证明最近有持有专用凭证的实例与中央通信，不是硬件证明或无漏报保证。网页元数据检查、插件在线和飞书送达需要在中央分别记录。当前版本不发送端到端测试邮件，也没有 Graph / Gmail API OAuth。

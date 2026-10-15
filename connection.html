@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Etsy 邮件提醒</title><link rel="stylesheet" href="connection.css"></head>
+<body><header><img src="assets/icon32.png" width="29" height="29" alt=""><strong>Etsy 邮件提醒</strong></header>
+<main><form id="login-form"><p class="hint">请输入分配给此插件的专用凭证。</p>
+<label for="account">账户</label><input id="account" maxlength="80" required autocomplete="username" placeholder="插件账户">
+<label for="password">密码</label><div class="password-row"><input id="password" type="password" maxlength="1024" required autocomplete="off" placeholder="插件密码"><button id="password-eye" type="button" aria-label="显示密码" aria-pressed="false" title="显示密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+<button class="primary" type="submit" id="login-button">连接</button>
+<details id="server-settings"><summary>连接设置</summary><label for="server">中央服务器地址</label><input id="server" type="url" placeholder="https://your-server.com" autocomplete="url"></details></form>
+<section id="connected" hidden><div class="connection-line"><span class="dot"></span><strong id="connection-label">已连接</strong></div><div class="account-line">账户：<span id="connected-account"></span></div><button class="secondary" id="logout-button" type="button">退出连接</button></section>
+<p class="message" id="message" role="status" hidden></p></main>
+<script src="config.js"></script><script src="connection.js"></script></body></html>

@@ -1,15 +1,8 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.2.0';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
-  const LABELS = {
-    watching: '监听中', limited: '有限覆盖', unbound: '尚未绑定', paused: '已暂停',
-    closed: '页面已关闭', unavailable: '页面无响应', loading: '页面加载中',
-    login_required: '需要登录', identity_unknown: '无法确认账号', account_mismatch: '账号不匹配',
-    wrong_folder: '请切回收件箱', view_unavailable: '未找到邮件列表', stale: '状态已过期',
-    sleeping: '页面已休眠', initializing: '等待首次扫描', storage_error: '本地保存失败'
-  };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);
     return match ? match[1].toLowerCase() : '';
@@ -40,103 +33,79 @@
     return Array.from(new Uint8Array(bytes), n => n.toString(16).padStart(2, '0')).join('');
   }
   function createState(now = Date.now()) {
-    return { schema: 1, deviceId: crypto.randomUUID(), settings: { deviceName: '我的 Windows 电脑', desktopNotifications: false, panelCollapsed: false },
-      mailboxes: [], tabs: {}, events: [], log: [], connection: { status: 'local', server: '', serverId: '', lastHeartbeatAt: null, error: '' },
-      sequence: 0, createdAt: now };
-  }
-  function log(state, level, text, now = Date.now(), mailboxId = '') {
-    const previous = state.log[0];
-    if (previous?.text === text && previous.mailboxId === mailboxId && now - previous.at < 60000) return;
-    state.log.unshift({ id: crypto.randomUUID(), at: now, level, text: clean(text, 500), mailboxId });
-    state.log = state.log.slice(0, 300);
+    return { schema: 2, installationId: crypto.randomUUID(), sequence: 0, panelCollapsed: false,
+      connection: { status: 'disconnected', server: '', account: '', token: '', owner: '', deviceId: '', lastHeartbeatAt: null, error: '' },
+      mailboxes: [], tabs: {}, events: [], createdAt: now };
   }
   function normalizeServer(value) {
-    const url = new URL(String(value || '').trim());
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('远程网站必须使用 HTTPS；本机测试可使用 localhost 或 127.0.0.1。');
-    if (url.username || url.password || url.search || url.hash) throw new Error('网站地址不能包含账号、查询参数或锚点。');
+    let url;
+    try { url = new URL(String(value || '').trim()); } catch (_) { throw new Error('请在连接设置中填写中央服务器地址。'); }
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('中央服务器必须使用 HTTPS；本机测试可使用 HTTP。');
+    if (url.username || url.password || url.search || url.hash) throw new Error('服务器地址不能包含账户、查询参数或锚点。');
     return url.origin + url.pathname.replace(/\/+$/, '');
   }
   function permissionPattern(server) { const u = new URL(server); return `${u.protocol}//${u.hostname}/*`; }
-  function mailboxUrl(box) {
-    return box.provider === 'gmail' ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(box.email)}#inbox` : 'https://outlook.live.com/mail/0/inbox';
+  function active(state) { return !!state.connection.token && state.connection.status !== 'auth_required'; }
+  function publicConnection(state, now = Date.now()) {
+    const c = state.connection;
+    const status = c.status === 'connected' && (!c.lastHeartbeatAt || now - c.lastHeartbeatAt > 90000) ? 'stale' : c.status;
+    return { server: c.server, account: c.account, authenticated: active(state), status, error: c.error || '', panelCollapsed: state.panelCollapsed };
   }
-  function boxHealth(state, box, now = Date.now()) {
-    if (!box.enabled) return { code: 'paused', label: LABELS.paused, tone: 'neutral', lastScanAt: null, tabs: [] };
-    const tabs = Object.values(state.tabs).filter(t => t.mailboxId === box.id);
+  function mailboxHealth(state, box, now = Date.now()) {
+    const tabs = Object.values(state.tabs).filter(t => t.mailboxId === box.id && t.owner === box.owner);
     const fresh = tabs.filter(t => now - t.at < 90000);
-    const valid = fresh.filter(t => ['watching', 'limited'].includes(t.status)).sort((a, b) => b.lastScanAt - a.lastScanAt);
-    let code = valid.length ? (valid.some(t => t.status === 'watching') ? 'watching' : 'limited') :
-      fresh.sort((a, b) => b.at - a.at)[0]?.status || (tabs.length ? 'stale' : 'closed');
-    if (!box.baselined && code === 'closed') code = 'initializing';
-    return { code, label: LABELS[code] || '待检查', tone: code === 'watching' ? 'good' : ['paused', 'initializing'].includes(code) ? 'neutral' : 'warn',
-      lastScanAt: valid[0]?.lastScanAt || box.lastScanAt || null, tabs };
-  }
-  function publicState(state, now = Date.now()) {
-    const { challenge, ...connection } = state.connection;
-    if (connection.status === 'connected' && (!connection.lastHeartbeatAt || now - connection.lastHeartbeatAt > 90000)) connection.status = 'stale';
-    return { version: VERSION, deviceId: state.deviceId, settings: state.settings, connection,
-      mailboxes: state.mailboxes.map(box => { const { seen, ...publicBox } = box; return { ...publicBox, health: boxHealth(state, box, now) }; }),
-      tabs: Object.values(state.tabs), events: state.events.slice(-300).reverse().map(e => { const { code, ...entry } = e; return entry; }), log: state.log, now,
-      counts: { total: state.mailboxes.length, readable: state.mailboxes.filter(b => ['watching', 'limited'].includes(boxHealth(state, b, now).code)).length,
-        pending: state.events.filter(e => e.delivery === 'pending').length, today: state.events.filter(e => new Date(e.detectedAt).toDateString() === new Date(now).toDateString() && e.kind !== 'verification').length } };
+    const readable = fresh.find(t => ['watching', 'limited'].includes(t.status));
+    return { status: readable?.status || fresh.sort((a, b) => b.at - a.at)[0]?.status || (tabs.length ? 'stale' : 'closed'),
+      last_scan_at: box.lastScanAt || null, open_tab_count: tabs.length };
   }
   async function applySnapshot(state, tab, report, now = Date.now()) {
+    if (!active(state)) return [];
     const p = provider(tab.url);
-    if (!p || p !== report.provider) throw new Error('邮箱页面来源不匹配。');
-    const address = email(report.email);
+    if (!p || report.provider !== p) throw new Error('邮箱页面来源不匹配。');
+    const address = email(report.email), owner = state.connection.owner;
     const previous = state.tabs[tab.id];
-    const boxes = state.mailboxes.filter(b => b.provider === p);
-    const box = boxes.find(b => b.email === address);
-    const previousBox = boxes.find(b => b.id === previous?.mailboxId);
-    const record = { tabId: tab.id, documentId: tab.documentId || '', provider: p, email: address,
-      mailboxId: box?.id || previousBox?.id || '', at: now, lastScanAt: null, status: report.status || 'view_unavailable',
-      detail: clean(report.detail, 250), rowCount: Math.min(Number(report.rowCount) || 0, 1000), coverage: 'visible_rows', url: tab.url };
-    if (!address && record.status !== 'login_required') record.status = 'identity_unknown';
-    if (address && !box) record.status = previousBox ? 'account_mismatch' : 'unbound';
-    if (box && !box.enabled) record.status = 'paused';
-    state.tabs[tab.id] = record;
-    if (previous?.status !== record.status) log(state, ['watching', 'limited', 'unbound'].includes(record.status) ? 'info' : 'warn',
-      `${address || '邮箱页面'}：${LABELS[record.status] || record.status}`, now, record.mailboxId);
-    if (!box || !box.enabled || !['watching', 'limited'].includes(record.status)) return [];
-    record.lastScanAt = now; box.lastScanAt = now;
-    const messages = Array.isArray(report.messages) ? report.messages.slice(0, 500) : [];
-    const newEvents = [];
-    const first = !box.baselined;
-    box.seen ||= {};
-    for (const raw of messages) {
+    let box = state.mailboxes.find(b => b.owner === owner && b.provider === p && b.email === address);
+    const readable = ['watching', 'limited'].includes(report.status);
+    if (!box && address && readable) {
+      box = { id: await digest(`${owner}:${mailboxKey(p, address)}`), owner, provider: p, email: address,
+        startedAt: now, baselined: false, seen: {}, lastScanAt: null };
+      state.mailboxes.push(box);
+    }
+    state.tabs[tab.id] = { tabId: tab.id, owner, provider: p, email: address,
+      mailboxId: box?.id || (previous?.owner === owner ? previous.mailboxId : ''), at: now,
+      status: !address ? report.status === 'login_required' ? 'login_required' : 'identity_unknown' : report.status || 'view_unavailable',
+      rowCount: Math.min(Number(report.rowCount) || 0, 500) };
+    if (!box || !readable || !address) return [];
+    box.lastScanAt = now;
+    const first = !box.baselined, added = [];
+    for (const raw of (Array.isArray(report.messages) ? report.messages : []).slice(0, 500)) {
       if (!raw || typeof raw !== 'object') continue;
-      const message = { subject: clean(raw.subject), sender: email(raw.sender), senderName: clean(raw.senderName, 120),
+      const message = { subject: clean(raw.subject), sender: email(raw.sender), senderName: clean(raw.senderName, 100),
         sourceId: clean(raw.sourceId, 250), identityKind: ['message', 'thread', 'fingerprint'].includes(raw.identityKind) ? raw.identityKind : 'fingerprint',
         receivedAt: Number.isFinite(Date.parse(raw.receivedAt)) ? new Date(raw.receivedAt).toISOString() : null,
         timeHint: clean(raw.timeHint, 120), threadCount: clean(raw.threadCount, 20) };
-      const key = await digest(`${box.id}:${revision(message)}`);
-      if (box.seen[key]) { box.seen[key] = now; continue; }
-      box.seen[key] = now;
+      const sourceRevision = await digest(revision(message));
+      if (box.seen[sourceRevision]) { box.seen[sourceRevision] = now; continue; }
+      box.seen[sourceRevision] = now;
       const classified = classify(message);
-      // Initial visible rows are a baseline, not a new-message notification.
-      // Previously hidden rows with known old timestamps are not new arrivals either.
       if (first || !classified || (message.receivedAt && Date.parse(message.receivedAt) < box.startedAt - 60000)) continue;
-      const event = { id: key, mailboxId: box.id, provider: p, email: box.email, shop: box.shop,
-        kind: 'buyer_message', category: classified.category, subject: classified.subject, sender: message.sender || message.senderName,
-        confidence: classified.confidence, identityKind: message.identityKind, sourceId: message.sourceId || null,
-        sourceRevision: await digest(revision(message)), receivedAt: message.receivedAt, detectedAt: now,
-        delivery: state.connection.serverId ? 'pending' : 'local', destination: state.connection.serverId || '', attempts: 0 };
-      if (!state.events.some(e => e.id === key)) { state.events.push(event); newEvents.push(event); }
+      const id = await digest(`${state.installationId}:${owner}:${mailboxKey(p, address)}:${sourceRevision}`);
+      if (state.events.some(e => e.id === id)) continue;
+      const event = { id, owner, mailboxId: box.id, provider: p, email: address,
+        kind: 'buyer_message', subject: classified.subject, category: classified.category, confidence: classified.confidence,
+        sender: message.sender || message.senderName, sourceId: message.sourceId || null, sourceRevision,
+        identityKind: message.identityKind, receivedAt: message.receivedAt, detectedAt: now, delivery: 'pending', attempts: 0 };
+      state.events.push(event); added.push(event);
     }
     box.baselined = true;
-    const entries = Object.entries(box.seen);
-    if (entries.length > 5000) box.seen = Object.fromEntries(entries.sort((a, b) => b[1] - a[1]).slice(0, 5000));
-    // Never discard unsent events. Only truncate completed/local history.
-    if (state.events.length > 2000) {
-      let removable = state.events.length - 2000;
-      state.events = state.events.filter(e => e.delivery === 'pending' || e.delivery === 'failed' || removable-- <= 0);
-    }
-    if (first) log(state, 'info', `${box.shop} 已建立当前可见列表基线；之后发现的匹配邮件将记录。`, now, box.id);
-    if (newEvents.length) log(state, 'info', `${box.shop} 发现 ${newEvents.length} 条买家消息候选。`, now, box.id);
-    return newEvents;
+    const ledger = Object.entries(box.seen);
+    if (ledger.length > 5000) box.seen = Object.fromEntries(ledger.sort((a, b) => b[1] - a[1]).slice(0, 5000));
+    const completed = state.events.filter(e => e.delivery === 'uploaded').slice(-100);
+    state.events = [...state.events.filter(e => e.delivery !== 'uploaded'), ...completed];
+    return added;
   }
-  const api = { VERSION, HOSTS, LABELS, email, provider, mailboxKey, clean, subject, classify, revision, digest, createState, log,
-    normalizeServer, permissionPattern, mailboxUrl, boxHealth, publicState, applySnapshot };
+  const api = { VERSION, HOSTS, email, provider, mailboxKey, clean, subject, classify, revision, digest,
+    createState, normalizeServer, permissionPattern, active, publicConnection, mailboxHealth, applySnapshot };
   root.MailWatchCore = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(globalThis);

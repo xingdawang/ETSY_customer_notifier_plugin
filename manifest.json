@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Etsy 消息哨兵",
-  "version": "0.1.0",
-  "description": "在已登录的 Outlook 与 Gmail 网页中发现 Etsy 买家消息，并检查逐邮箱监听状态。",
+  "name": "Etsy 邮件提醒",
+  "version": "0.2.0",
+  "description": "使用中央服务器分配的插件凭证连接，后台发现 Outlook / Gmail 中的 Etsy 买家消息。",
   "minimum_chrome_version": "120",
   "permissions": ["alarms"],
   "host_permissions": [
@@ -11,16 +11,18 @@
     "https://outlook.office365.com/*",
     "https://mail.google.com/*"
   ],
-  "optional_permissions": ["notifications"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
   "background": {"service_worker": "background.js"},
-  "action": {"default_title": "Etsy 消息哨兵", "default_popup": "popup.html", "default_icon": {"16": "assets/icon16.png", "32": "assets/icon32.png"}},
+  "action": {"default_title": "Etsy 邮件提醒", "default_popup": "connection.html", "default_icon": {"16": "assets/icon16.png", "32": "assets/icon32.png"}},
   "icons": {"16": "assets/icon16.png", "48": "assets/icon48.png", "128": "assets/icon128.png"},
-  "options_page": "dashboard.html",
   "content_scripts": [{
     "matches": ["https://outlook.live.com/*", "https://outlook.office.com/*", "https://outlook.office365.com/*", "https://mail.google.com/*"],
     "js": ["core.js", "adapters.js", "content.js"],
     "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["connection.html", "connection.css", "connection.js", "config.js", "assets/icon32.png"],
+    "matches": ["https://outlook.live.com/*", "https://outlook.office.com/*", "https://outlook.office365.com/*", "https://mail.google.com/*"]
   }],
   "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
 }

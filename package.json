@@ -1,8 +1,8 @@
 {
   "name": "etsy-customer-notifier-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Chrome and Edge extension for observing Etsy buyer-message notifications in Outlook and Gmail.",
+  "description": "Lightweight Chrome and Edge mailbox extension authenticated with provisioned plugin credentials.",
   "scripts": {
     "test": "node --test tests/core.test.cjs tests/worker.test.cjs",
     "test:browser": "node tests/browser-smoke.cjs",
