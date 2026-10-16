@@ -85,14 +85,15 @@ async function sync(state, force = false) {
       previous_challenge: c.challenge || null,
       pending_event_count: state.events.filter(e => e.owner === c.owner && e.delivery === 'pending').length,
       last_upload_error: c.uploadError || '',
-      mailboxes: ownerBoxes.map(b => ({ mailbox_id: b.id, provider: b.provider, email: b.email,
+      mailboxes: ownerBoxes.map(b => ({ mailbox_id: b.id, provider: b.provider, email: b.email, reported_email: b.reportedEmail || b.email,
         ...C.mailboxHealth(state, b), coverage: 'visible_rows' })),
       completed_command: c.completedCommand || '',
       diagnostics: { capabilities: ['central_config_v1', 'etsy_candidates_v1'], config_revision: C.acceptConfig(c.config)?.revision || '',
-        pages: Object.values(state.tabs).filter(t => t.owner === c.owner).slice(0, 100).map(t => ({ provider: t.provider, status: t.status, row_count: t.rowCount || 0, reported_at: t.at })) },
+        pages: Object.values(state.tabs).filter(t => t.owner === c.owner).slice(0, 100).map(t => ({ provider: t.provider, status: t.status, row_count: t.rowCount || 0, reported_at: t.at, page_hidden: t.pageHidden === true })) },
       unidentified_pages: Object.values(state.tabs).filter(t => t.owner === c.owner && !t.email).length
     });
     verifyIdentity(data, c);
+    c.recordedEmail = C.email(data.recorded_email);
     const config = C.acceptConfig(data.collection_config);
     if (config) c.config = config;
     const command = data.command;
@@ -160,7 +161,7 @@ async function handle(message, sender) {
       if (result.account !== account || typeof result.access_token !== 'string' || !result.access_token || typeof result.device_id !== 'string' || !result.device_id || result.device_id.length > 128) throw new Error('中央服务器未确认正确的插件身份。');
       const owner = await C.digest(`${server}:${result.device_id}:${account}`);
       state.connection = { server, account, deviceId: result.device_id, owner, token: result.access_token,
-        status: 'connected', error: '', lastHeartbeatAt: null };
+        status: 'connected', error: '', lastHeartbeatAt: null, recordedEmail: C.email(result.recorded_email) };
       await save(state);
       await scanTabs(state); await sync(state, true);
       return { connection: C.publicConnection(state) };

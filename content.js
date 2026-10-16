@@ -74,7 +74,7 @@
       report.email = cachedIdentity.email;
       if (report.status === 'identity_unknown') report.status = report.listStatus || 'view_unavailable';
     } else cachedIdentity = null;
-    return { ...report, documentNonce, pageUrl: location.href };
+    return { ...report, documentNonce, pageUrl: location.href, pageHidden: document.hidden };
   }
   async function scan(periodic = false) {
     if (stopped) return;

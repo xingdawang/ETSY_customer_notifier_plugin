@@ -136,3 +136,29 @@ test('invalid remote configuration cannot replace a working configuration', () =
   for (const changes of [{ schema: 2 }, { poll_seconds: 0 }, { collection_mode: 'all_mail' }, { revision: 'invalid' }]) assert.equal(C.acceptConfig({ ...valid, ...changes }), null);
   assert.equal(C.pollSeconds(setup()), 30);
 });
+
+test('central recorded email attributes mail without claiming page identity was verified', async () => {
+  const state=setup(); state.connection.recordedEmail='configured@gmail.com';
+  const gmail={id:7,url:'https://mail.google.com/mail/u/0/#inbox'};
+  const report=snapshot([],{provider:'gmail',email:'wrong@gmail.com'});
+  await C.applySnapshot(state,gmail,report,now);
+  await C.applySnapshot(state,gmail,{...report,messages:[mail('latest')]},now+1000);
+  assert.equal(state.events.length,1);
+  assert.equal(state.events[0].email,'configured@gmail.com');
+  assert.equal(state.mailboxes[0].reportedEmail,'wrong@gmail.com');
+  assert.equal(state.tabs[7].email,'configured@gmail.com');
+});
+test('Gmail upgrade rebaselines once and preserves queued events and authentication', async () => {
+  const state=setup(), gmail={id:7,url:'https://mail.google.com/mail/u/0/#inbox'};
+  const report=snapshot([mail('old')],{provider:'gmail'});
+  await C.applySnapshot(state,gmail,report,now);
+  delete state.mailboxes[0].collectorRevision; // 0.3.0 persisted state
+  state.events.push({id:'pending',owner:state.connection.owner,delivery:'pending'});
+  await C.applySnapshot(state,gmail,{...report,messages:[mail('existing-latest')]},now+1000);
+  assert.equal(state.events.length,1);
+  await C.applySnapshot(state,gmail,{...report,messages:[mail('existing-latest'),mail('new-latest')]},now+2000);
+  assert.equal(state.events.length,2);assert.equal(state.connection.token,'private-token');
+  const restored=structuredClone(state);
+  await C.applySnapshot(restored,gmail,{...report,messages:[mail('new-latest')]},now+3000);
+  assert.equal(restored.events.length,2);
+});

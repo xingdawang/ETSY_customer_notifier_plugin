@@ -162,3 +162,14 @@ test('wrong server identity cannot change configuration or execute commands', as
   await w.sync(w.state(), true);
   assert.equal(w.state().connection.config, undefined);
 });
+
+test('central mailbox identity is applied on login and refreshed by heartbeat', async () => {
+  const w=await worker();
+  w.setFetch(async (url,options) => {
+    const body=JSON.parse(options.body);
+    return w.ok('plugin-01','device-01',{access_token:'session-token',recorded_email:'configured@gmail.com'});
+  });
+  await login(w);assert.equal(w.state().connection.recordedEmail,'configured@gmail.com');
+  w.setFetch(async()=>w.ok('plugin-01','device-01',{recorded_email:'changed@gmail.com'}));
+  await w.sync(w.state(),true);assert.equal(w.state().connection.recordedEmail,'changed@gmail.com');
+});

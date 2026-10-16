@@ -1,7 +1,7 @@
 /* Shared policy and deterministic state transitions. No mailbox passwords or API tokens. */
 (function (root) {
   'use strict';
-  const VERSION = '0.3.0';
+  const VERSION = '0.3.1';
   const HOSTS = { 'outlook.live.com': 'outlook', 'outlook.office.com': 'outlook', 'outlook.office365.com': 'outlook', 'mail.google.com': 'gmail' };
   function email(value) {
     const match = String(value || '').trim().match(/(?:^|[\s<（(])([A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?=$|[\s>）),;])/i);
@@ -71,10 +71,11 @@
     if (!active(state)) return [];
     const p = provider(tab.url);
     if (!p || report.provider !== p) throw new Error('邮箱页面来源不匹配。');
-    const address = email(report.email), owner = state.connection.owner;
+    const address = email(state.connection.recordedEmail) || email(report.email), owner = state.connection.owner;
+    const reportStatus = report.status === 'identity_unknown' && address ? report.listStatus || report.status : report.status;
     const previous = state.tabs[tab.id];
     let box = state.mailboxes.find(b => b.owner === owner && b.provider === p && b.email === address);
-    const readable = ['watching', 'limited'].includes(report.status);
+    const readable = ['watching', 'limited'].includes(reportStatus);
     if (!box && address) {
       box = { id: await digest(`${owner}:${mailboxKey(p, address)}`), owner, provider: p, email: address,
         startedAt: now, baselined: false, seen: {}, lastScanAt: null };
@@ -82,9 +83,15 @@
     }
     state.tabs[tab.id] = { tabId: tab.id, owner, provider: p, email: address,
       mailboxId: box?.id || (previous?.owner === owner ? previous.mailboxId : ''), at: now,
-      status: !address ? report.status === 'login_required' ? 'login_required' : 'identity_unknown' : report.status || 'view_unavailable',
-      rowCount: Math.min(Number(report.rowCount) || 0, 500) };
+      status: !address ? reportStatus === 'login_required' ? 'login_required' : 'identity_unknown' : reportStatus || 'view_unavailable',
+      rowCount: Math.min(Number(report.rowCount) || 0, 500), pageHidden: report.pageHidden === true };
     if (!box || !readable || !address) return [];
+    box.reportedEmail = email(report.email);
+    // Rebaseline once when upgrading Gmail identity semantics; never replay old visible rows.
+    if (p === 'gmail' && box.collectorRevision !== 'gmail-latest-v1') {
+      box.baselined = false;
+      box.collectorRevision = 'gmail-latest-v1';
+    }
     box.lastScanAt = now;
     const first = !box.baselined, added = [];
     for (const raw of (Array.isArray(report.messages) ? report.messages : []).slice(0, 500)) {

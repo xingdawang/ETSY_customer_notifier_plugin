@@ -73,11 +73,15 @@
     if (!subject) return null;
     const idNode = row.matches('[data-legacy-message-id],[data-legacy-last-message-id],[data-message-id]') ? row : row.querySelector('[data-legacy-message-id],[data-legacy-last-message-id],[data-message-id]');
     const threadNode = row.matches('[data-legacy-thread-id],[data-thread-id],[data-convid],[data-itemid]') ? row : row.querySelector('[data-legacy-thread-id],[data-thread-id],[data-convid],[data-itemid]');
-    const messageId = idNode?.getAttribute('data-legacy-message-id') || idNode?.getAttribute('data-legacy-last-message-id') || idNode?.getAttribute('data-message-id');
+    const identityNodes = [row, ...nodes(row, '[data-legacy-last-message-id],[data-legacy-message-id],[data-message-id]')];
+    const latestId = identityNodes.map(n => n.getAttribute('data-legacy-last-message-id')).find(Boolean);
+    const messageId = p === 'gmail' ? latestId : idNode?.getAttribute('data-legacy-message-id') || idNode?.getAttribute('data-message-id');
     const threadId = threadNode?.getAttribute('data-legacy-thread-id') || threadNode?.getAttribute('data-thread-id') || threadNode?.getAttribute('data-convid') || threadNode?.getAttribute('data-itemid');
-    const count = row.querySelector('[data-thread-count],.yW .bq3');
+    // Gmail's original message ID can stay unchanged when the conversation grows.
+    const stableRowId = p === 'gmail' ? identityNodes.map(n => n.getAttribute('data-legacy-message-id') || n.getAttribute('data-message-id')).find(Boolean) : '';
+    const count = row.querySelector('[data-thread-count],.yW .bq3,.yW .bsU');
     return { subject, ...senderMetadata(row, p), ...dateMetadata(row, p),
-      sourceId: messageId || threadId || '', identityKind: messageId ? 'message' : threadId ? 'thread' : 'fingerprint',
+      sourceId: messageId || threadId || stableRowId || '', identityKind: messageId ? 'message' : threadId || stableRowId ? 'thread' : 'fingerprint',
       threadCount: C.clean(count?.getAttribute('data-thread-count') || texts(count), 20) };
   }
   function read(doc, url) {
