@@ -110,7 +110,7 @@
       const event = { id, owner, mailboxId: box.id, provider: p, email: address,
         kind: central ? 'etsy_candidate' : 'buyer_message', subject: central ? message.subject : classified.subject, category: classified?.category || '', confidence: classified?.confidence || '',
         sender: message.sender || message.senderName, sourceId: message.sourceId || null, sourceRevision,
-        identityKind: message.identityKind, receivedAt: message.receivedAt, detectedAt: now, delivery: 'pending', attempts: 0 };
+        identityKind: message.identityKind, receivedAt: message.receivedAt, detectedAt: now, reportedEmail: email(report.email) || address, delivery: 'pending', attempts: 0 };
       state.events.push(event); added.push(event);
     }
     box.baselined = true;

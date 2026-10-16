@@ -145,6 +145,7 @@ test('central recorded email attributes mail without claiming page identity was 
   await C.applySnapshot(state,gmail,{...report,messages:[mail('latest')]},now+1000);
   assert.equal(state.events.length,1);
   assert.equal(state.events[0].email,'configured@gmail.com');
+  assert.equal(state.events[0].reportedEmail,'wrong@gmail.com');
   assert.equal(state.mailboxes[0].reportedEmail,'wrong@gmail.com');
   assert.equal(state.tabs[7].email,'configured@gmail.com');
 });

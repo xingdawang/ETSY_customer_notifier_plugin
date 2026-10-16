@@ -75,7 +75,7 @@
     const threadNode = row.matches('[data-legacy-thread-id],[data-thread-id],[data-convid],[data-itemid]') ? row : row.querySelector('[data-legacy-thread-id],[data-thread-id],[data-convid],[data-itemid]');
     const identityNodes = [row, ...nodes(row, '[data-legacy-last-message-id],[data-legacy-message-id],[data-message-id]')];
     const latestId = identityNodes.map(n => n.getAttribute('data-legacy-last-message-id')).find(Boolean);
-    const messageId = p === 'gmail' ? latestId : idNode?.getAttribute('data-legacy-message-id') || idNode?.getAttribute('data-message-id');
+    const messageId = p === 'gmail' ? latestId : idNode?.getAttribute('data-legacy-message-id') || idNode?.getAttribute('data-message-id') || latestId;
     const threadId = threadNode?.getAttribute('data-legacy-thread-id') || threadNode?.getAttribute('data-thread-id') || threadNode?.getAttribute('data-convid') || threadNode?.getAttribute('data-itemid');
     // Gmail's original message ID can stay unchanged when the conversation grows.
     const stableRowId = p === 'gmail' ? identityNodes.map(n => n.getAttribute('data-legacy-message-id') || n.getAttribute('data-message-id')).find(Boolean) : '';
