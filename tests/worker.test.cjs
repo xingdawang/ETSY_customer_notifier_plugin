@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { webcrypto } = require('node:crypto');
 const C = require('../core.js');
-async function worker(seed = {}) {
+async function worker(seed = {}, { timerCapMs = Infinity } = {}) {
   const store = structuredClone(seed), listeners = {}, requests = [], reports = new Map(), tabs = [];
   const event = name => ({ addListener: fn => { listeners[name] = fn; } });
   const api = { alarms: { get: async () => ({}), create: async () => {}, onAlarm: event('alarm') },
@@ -19,7 +19,8 @@ async function worker(seed = {}) {
     const body = JSON.parse(options.body);
     return ok(body.account, body.account === 'plugin-02' ? 'device-02' : 'device-01', url.endsWith('/login') ? { access_token: 'session-token' } : url.endsWith('/events') ? { acknowledged_event_ids: body.events.map(e => e.id) } : {});
   };
-  const context = vm.createContext({ chrome: api, crypto: webcrypto, TextEncoder, URL, AbortSignal, setTimeout,
+  const context = vm.createContext({ chrome: api, crypto: webcrypto, TextEncoder, URL, AbortSignal,
+    setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, timerCapMs)), clearTimeout,
     fetch: async (url, options) => { requests.push({ url, options, body: JSON.parse(options.body) }); return fetcher(url, options); } });
   context.importScripts = (...files) => files.forEach(file => {
     if (file === 'storage.js') context.MailWatchStorage = { get: async key => ({ [key]: structuredClone(store[key]) }), set: async data => Object.assign(store, structuredClone(data)) };
@@ -172,4 +173,61 @@ test('central mailbox identity is applied on login and refreshed by heartbeat', 
   await login(w);assert.equal(w.state().connection.recordedEmail,'configured@gmail.com');
   w.setFetch(async()=>w.ok('plugin-01','device-01',{recorded_email:'changed@gmail.com'}));
   await w.sync(w.state(),true);assert.equal(w.state().connection.recordedEmail,'changed@gmail.com');
+});
+
+async function mailboxWorker(options) {
+  const w = await worker({}, options);
+  w.tabs.push({ id: 1, url: 'https://outlook.live.com/mail/', active: true, discarded: false, frozen: false });
+  w.reports.set(1, { provider: 'outlook', email: 'fixture@outlook.com', status: 'limited', rowCount: 7,
+    messages: [], documentNonce: 'fixture-document', pageUrl: 'https://outlook.live.com/mail/' });
+  await login(w);
+  return w;
+}
+test('a responsive mailbox overrides a contradictory frozen flag and uploads its actual health', async () => {
+  const w = await mailboxWorker();
+  const before = w.state(), box = before.mailboxes[0];
+  w.tabs[0].frozen = true;
+  before.tabs[1].status = 'sleeping'; box.lastScanAt = 1;
+  await w.scanTabs(before); await w.sync(w.state(), true);
+  const s = w.state();
+  assert.equal(s.tabs[1].status, 'limited'); assert.equal(s.tabs[1].rowCount, 7);
+  assert.ok(s.mailboxes[0].lastScanAt > 1);
+  assert.equal(w.requests.at(-1).body.mailboxes[0].status, 'limited');
+  assert.equal(s.installationId, before.installationId); assert.equal(s.connection.token, before.connection.token);
+  assert.equal(s.mailboxes[0].id, box.id);
+});
+test('a frozen page with no response stays sleeping while heartbeat continues, then recovers', async () => {
+  const w = await mailboxWorker({ timerCapMs: 10 });
+  w.tabs[0].frozen = true;
+  const send = w.api.tabs.sendMessage;
+  w.api.tabs.sendMessage = () => new Promise(() => {});
+  await w.scanTabs(w.state()); await w.sync(w.state(), true);
+  assert.equal(w.requests.at(-1).body.mailboxes[0].status, 'sleeping');
+  w.api.tabs.sendMessage = send;
+  await w.scanTabs(w.state()); await w.sync(w.state(), true);
+  assert.equal(w.requests.at(-1).body.mailboxes[0].status, 'limited');
+});
+test('discarded tabs are sleeping without probing an unloaded document', async () => {
+  const w = await mailboxWorker(); w.tabs[0].discarded = true;
+  w.api.tabs.sendMessage = () => { throw new Error('must not contact a discarded document'); };
+  await w.scanTabs(w.state());
+  assert.equal(C.mailboxHealth(w.state(), w.state().mailboxes[0]).status, 'sleeping');
+});
+test('missing content receiver on an unfrozen page reports unavailable rather than sleeping', async () => {
+  const w = await mailboxWorker();
+  w.api.tabs.sendMessage = async () => { throw new Error('Receiving end does not exist'); };
+  await w.scanTabs(w.state());
+  assert.equal(C.mailboxHealth(w.state(), w.state().mailboxes[0]).status, 'unavailable');
+});
+test('document verification times out without blocking subsequent heartbeat work', async () => {
+  const w = await mailboxWorker({ timerCapMs: 10 });
+  w.api.tabs.sendMessage = () => new Promise(() => {});
+  const reply = new Promise(resolve => w.listeners.message({ type: 'MW_REPORT', report: w.reports.get(1) },
+    { ...w.mail, url: 'https://outlook.live.com/mail/' }, resolve));
+  w.listeners.alarm({ name: 'mailwatch-tick' });
+  const result = await Promise.race([reply, new Promise(resolve => setTimeout(() => resolve({ stuck: true }), 100))]);
+  assert.equal(result.stuck, undefined, 'page verification must release the serial queue');
+  assert.equal(result.ok, false);
+  await w.flush();
+  assert.ok(w.requests.at(-1).url.endsWith('/heartbeat'));
 });

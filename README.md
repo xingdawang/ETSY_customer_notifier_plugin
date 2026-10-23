@@ -1,4 +1,11 @@
-# Etsy 邮件提醒 · 轻量插件 v0.3.1
+# Etsy 邮件提醒 · 轻量插件 v0.3.2
+
+## v0.3.2 邮箱休眠误报修复
+
+- 对仍在内存中的邮箱页执行有超时的采集探测。即使 Chrome 返回 `frozen: true`，页面能正常响应时也以真实采集结果为准；只有探测失败时才按冻结标记报告休眠。已被丢弃的页面仍报告休眠。
+- 页面身份复核同样限制为 2.5 秒，避免一个无响应页面拖住后续心跳和检测。
+- 插件重新加载导致旧页面脚本失效时，显示“当前邮箱检测已停止”和刷新按钮，隐藏旧的连接浮层；不再在浮层消息处理中调用已失效的 `runtime.getURL()`。
+- 保留原目录、安装身份、设备令牌、去重记录和待上传队列；更新并重新加载插件后，刷新对应邮箱页面。无需解除绑定或重新安装。
 
 Chrome / Edge Manifest V3 扩展。登录界面从上到下显示中央服务器地址、插件账户、密码和连接按钮；连接后显示账户、连接结果和退出；邮箱页面右侧可收起，工具栏弹窗使用同一界面。
 
@@ -56,7 +63,7 @@ npm run test:browser
 
 可用 `MW_BROWSER_PATH` 指定 Chromium。预览位于 `artifacts/screenshots/`。
 
-打包：`python3 tools/package_extension.py`，输出 `dist/etsy-message-sentinel-v0.3.1.zip`。
+打包：`python3 tools/package_extension.py`，输出 `../outputs/etsy-message-sentinel-v0.3.1.zip`。
 
 ## v0.2.3 Outlook 兼容修复
 

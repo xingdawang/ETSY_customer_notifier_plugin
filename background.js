@@ -47,19 +47,32 @@ async function request(server, endpoint, token, body) {
 function verifyIdentity(data, connection) {
   if (data.account !== connection.account || data.device_id !== connection.deviceId) throw new Error('中央服务器返回的插件身份不一致，已停止本次上报。');
 }
+async function pageRequest(tabId, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      chrome.tabs.sendMessage(tabId, message, { frameId: 0 }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('邮箱页面未及时响应，请刷新邮箱页面。')), 2500); })
+    ]);
+  } finally { clearTimeout(timer); }
+}
 async function scanTabs(state) {
   if (!C.active(state)) return;
   const tabs = await chrome.tabs.query({}), supported = tabs.filter(t => C.provider(t.url));
   const present = new Set(tabs.map(t => t.id));
   for (const id of Object.keys(state.tabs)) if (!present.has(Number(id))) delete state.tabs[id];
   const replies = await Promise.allSettled(supported.map(async tab => {
-    if (tab.discarded || tab.frozen) return { sleeping: true };
-    const response = await Promise.race([
-      chrome.tabs.sendMessage(tab.id, { type: 'MW_COLLECT' }, { frameId: 0 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('no response')), 2500))
-    ]);
-    if (!response?.ok || !response.report) throw new Error('no response');
-    return response;
+    if (tab.discarded) return { sleeping: true };
+    // Chrome can retain frozen=true after a visible page has resumed. A live
+    // response is stronger evidence; only use the flag when that probe fails.
+    try {
+      const response = await pageRequest(tab.id, { type: 'MW_COLLECT' });
+      if (!response?.ok || !response.report) throw new Error('no response');
+      return response;
+    } catch (error) {
+      if (tab.frozen) return { sleeping: true };
+      throw error;
+    }
   }));
   for (let i = 0; i < supported.length; i++) {
     const tab = supported[i], result = replies[i];
@@ -147,7 +160,7 @@ async function handle(message, sender) {
       if (!C.active(state)) return {};
       const tab = await chrome.tabs.get(sender.tab.id);
       if (C.provider(tab.url) !== C.provider(sender.url)) return {};
-      const live = await chrome.tabs.sendMessage(tab.id, { type: 'MW_DOCUMENT_INFO' }, { frameId: 0 });
+      const live = await pageRequest(tab.id, { type: 'MW_DOCUMENT_INFO' });
       if (!live?.ok || live.documentNonce !== message.report?.documentNonce || live.pageUrl !== message.report?.pageUrl || live.email !== message.report?.email) return {};
       await C.applySnapshot(state, tab, message.report || {}); await save(state); return {};
     }

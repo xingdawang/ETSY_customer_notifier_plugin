@@ -1,11 +1,11 @@
 {
   "name": "etsy-customer-notifier-plugin",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Lightweight Chrome and Edge mailbox extension authenticated with provisioned plugin credentials.",
   "scripts": {
     "test": "node --test tests/core.test.cjs tests/worker.test.cjs",
-    "test:browser": "node tests/gmail-adapter.cjs && node tests/outlook-adapter.cjs && node tests/browser-smoke.cjs",
+    "test:browser": "node tests/gmail-adapter.cjs && node tests/outlook-adapter.cjs && node tests/content-lifecycle.cjs && node tests/browser-smoke.cjs",
     "package": "python3 tools/package_extension.py"
   },
   "devDependencies": {
